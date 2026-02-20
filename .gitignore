@@ -1,3 +1,6 @@
 .env
 files/*
 docker-compose.yml
+error.log
+__pycache__/
+*/__pycache__/

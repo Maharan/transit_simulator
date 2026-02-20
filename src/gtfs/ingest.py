@@ -232,17 +232,39 @@ def _ingest_file(
     feed_id: str,
     chunksize: int,
     type_map: dict[str, object],
+    progress: bool = False,
+    progress_every: int = 10,
+    drop_existing: bool = False,
 ) -> None:
     header = _read_header(path)
     metadata = MetaData()
     table = _make_table(metadata, schema, table_name, header, type_map)
+    if drop_existing:
+        table.drop(engine, checkfirst=True)
     table.create(engine, checkfirst=True)
 
+    # Postgres has a 65535 parameter limit per statement.
+    # Ensure chunks stay under that limit.
+    columns_per_row = len(header) + 1  # +1 for feed_id
+    if columns_per_row > 0:
+        max_rows = max(1, 65000 // columns_per_row)
+        if chunksize > max_rows:
+            if progress:
+                print(
+                    f"[{feed_id}] {table_name}: reducing chunksize to {max_rows} "
+                    f"(param limit)"
+                )
+            chunksize = max_rows
+
+    total_rows = 0
+    chunk_index = 0
     for chunk in pd.read_csv(path, dtype=str, chunksize=chunksize):
+        chunk_index += 1
         chunk = _coerce_types(chunk)
         if table_name == "shapes":
             chunk = coerce_shape_columns(chunk)
         chunk["feed_id"] = feed_id
+        total_rows += len(chunk)
         chunk.to_sql(
             table_name,
             engine,
@@ -251,6 +273,13 @@ def _ingest_file(
             index=False,
             method="multi",
         )
+        if progress and (chunk_index == 1 or chunk_index % progress_every == 0):
+            print(
+                f"[{feed_id}] {table_name}: loaded {total_rows} rows "
+                f"(chunk {chunk_index})"
+            )
+    if progress:
+        print(f"[{feed_id}] {table_name}: complete ({total_rows} rows)")
 
 
 def ingest_gtfs_folder(
@@ -259,6 +288,11 @@ def ingest_gtfs_folder(
     schema: str = "gtfs",
     feed_id: str | None = None,
     chunksize: int = 100_000,
+    dry_run: bool = False,
+    progress: bool = False,
+    progress_every: int = 10,
+    skip_tables: set[str] | None = None,
+    drop_existing: bool = False,
 ) -> None:
     folder = Path(folder)
     feed_id = feed_id or folder.name
@@ -269,6 +303,20 @@ def ingest_gtfs_folder(
         missing_list = ", ".join(sorted(missing))
         raise FileNotFoundError(f"Missing GTFS files: {missing_list}")
 
+    skip_tables = skip_tables or set()
+    if dry_run:
+        available = [
+            filename.replace(".txt", "")
+            for filename in sorted(GTFS_REQUIRED_FILES | GTFS_OPTIONAL_FILES)
+            if filename in files and filename.replace(".txt", "") not in skip_tables
+        ]
+        print(
+            "Dry run: would create schema "
+            f"'{schema}' and load tables: {', '.join(available)} "
+            f"(feed_id={feed_id})"
+        )
+        return
+
     engine = create_engine(database_url)
     create_schema(engine, schema)
 
@@ -277,6 +325,10 @@ def ingest_gtfs_folder(
         if not path:
             continue
         table_name = filename.replace(".txt", "")
+        if table_name in skip_tables:
+            if progress:
+                print(f"[{feed_id}] {table_name}: skipped")
+            continue
         type_map = GTFS_TYPE_MAP.get(filename, {})
         _ingest_file(
             engine=engine,
@@ -286,6 +338,9 @@ def ingest_gtfs_folder(
             feed_id=feed_id,
             chunksize=chunksize,
             type_map=type_map,
+            progress=progress,
+            progress_every=progress_every,
+            drop_existing=drop_existing,
         )
 
 
@@ -294,6 +349,11 @@ def ingest_all_gtfs(
     database_url: str,
     schema: str = "gtfs",
     chunksize: int = 100_000,
+    dry_run: bool = False,
+    progress: bool = False,
+    progress_every: int = 10,
+    skip_tables: set[str] | None = None,
+    drop_existing: bool = False,
 ) -> None:
     root_dir = Path(root_dir)
     for folder in sorted(p for p in root_dir.iterdir() if p.is_dir()):
@@ -303,4 +363,9 @@ def ingest_all_gtfs(
             schema=schema,
             feed_id=folder.name,
             chunksize=chunksize,
+            dry_run=dry_run,
+            progress=progress,
+            progress_every=progress_every,
+            skip_tables=skip_tables,
+            drop_existing=drop_existing,
         )
