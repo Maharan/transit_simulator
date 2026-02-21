@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 from sqlalchemy import func
 
 from graph import GraphCache
-from routing.itinerary import ItineraryBuilder
-from routing.td_dijkstra import parse_time_to_seconds, td_dijkstra
+from user_facing.itinerary import ItineraryBuilder
+from routing.td_dijkstra import td_dijkstra
+from routing.utils import parse_time_to_seconds
 from gtfs.models import Route, Stop
 from infra import Database
 
@@ -104,8 +105,15 @@ def main() -> None:
     parser.add_argument(
         "--transfer-penalty",
         type=int,
-        default=60,
+        default=300,
         help="Penalty in seconds added to each transfer (default: 300).",
+    )
+    parser.add_argument(
+        "--route-change-penalty",
+        type=int,
+        default=None,
+        help="Penalty in seconds when switching trips at the same stop "
+        "(default: transfer penalty).",
     )
     parser.add_argument(
         "--graph-cache",
@@ -218,6 +226,7 @@ def main() -> None:
         depart_time_str=args.depart_time,
         assume_zero_missing=args.assume_zero_missing,
         transfer_penalty_sec=args.transfer_penalty,
+        route_change_penalty_sec=args.route_change_penalty,
     )
 
     if result.arrival_time_sec is None:

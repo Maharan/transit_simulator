@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from graph.synthetic_edge import SyntheticEdge
-from routing.td_dijkstra import PathResult, parse_time_to_seconds
+from routing.types import ResultLike
+from routing.utils import parse_time_to_seconds
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class ItineraryBuilder:
 
     def build(
         self,
-        result: PathResult,
+        result: ResultLike,
         *,
         from_stop_name: str,
         to_stop_name: str,
@@ -69,7 +69,7 @@ class ItineraryBuilder:
             leg_lines=leg_lines,
         )
 
-    def _build_path_lines(self, result: PathResult) -> list[str]:
+    def _build_path_lines(self, result: ResultLike) -> list[str]:
         if not result.stop_path or not result.edge_path:
             return []
         lines: list[str] = []
@@ -82,7 +82,7 @@ class ItineraryBuilder:
             lines.append(f"    -> {to_name} ({to_id}) [{self._format_edge(edge)}]")
         return lines
 
-    def _build_leg_lines(self, result: PathResult) -> list[str]:
+    def _build_leg_lines(self, result: ResultLike) -> list[str]:
         legs = self._summarize_legs(result.edge_path, result.stop_path)
         return [f"  {leg}" for leg in legs]
 
@@ -150,7 +150,7 @@ class ItineraryBuilder:
                 if transfer_time is not None and apply_penalty:
                     transfer_time += self._transfer_penalty_sec
                 transfer_label = "Transfer"
-                if isinstance(edge, SyntheticEdge) and getattr(edge, "label", None):
+                if getattr(edge, "label", None) == "station_link":
                     transfer_label = "Station link"
                 legs.append(
                     f"{transfer_label} from {from_name} to {to_name} "
