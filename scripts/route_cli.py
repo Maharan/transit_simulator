@@ -6,24 +6,28 @@ import pstats
 from pathlib import Path
 
 from dotenv import load_dotenv
-from graph.caching import access_or_create_graph_cache
-from graph.utils import resolve_parent_stop
-from gtfs.utils import resolve_feed_id, resolve_stop_by_name
-from user_facing.itinerary import create_itinerary, create_itinerary_data
-from routing.td_dijkstra import td_dijkstra
-from routing.utils import parse_time_to_seconds
-from gtfs.models import Stop
+
+from core.routing.route_planner import (
+    RoutePlannerRequest,
+    find_best_route_and_itinerary,
+)
 from infra import Database
 
 
-def main() -> None:
-    graph_cache_version = 5
-    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compute travel time between two stops using cached graph edges."
     )
-    parser.add_argument("from_stop", help="Stop name (exact or partial match).")
-    parser.add_argument("to_stop", help="Stop name (exact or partial match).")
+    parser.add_argument(
+        "from_stop",
+        nargs="?",
+        help="From stop name (exact or partial match).",
+    )
+    parser.add_argument(
+        "to_stop",
+        nargs="?",
+        help="To stop name (exact or partial match).",
+    )
     parser.add_argument(
         "--from-stop-id",
         help="Use a specific from stop_id instead of resolving by name.",
@@ -31,6 +35,38 @@ def main() -> None:
     parser.add_argument(
         "--to-stop-id",
         help="Use a specific to stop_id instead of resolving by name.",
+    )
+    parser.add_argument(
+        "--from-lat",
+        type=float,
+        help="From latitude. Must be paired with --from-lon.",
+    )
+    parser.add_argument(
+        "--from-lon",
+        type=float,
+        help="From longitude. Must be paired with --from-lat.",
+    )
+    parser.add_argument(
+        "--to-lat",
+        type=float,
+        help="To latitude. Must be paired with --to-lon.",
+    )
+    parser.add_argument(
+        "--to-lon",
+        type=float,
+        help="To longitude. Must be paired with --to-lat.",
+    )
+    parser.add_argument(
+        "--coord-max-candidates",
+        type=int,
+        default=6,
+        help="How many nearby coordinate stop candidates to evaluate (default: 6).",
+    )
+    parser.add_argument(
+        "--coord-max-distance-m",
+        type=float,
+        default=500.0,
+        help="Max distance from coordinate to candidate stop in meters (default: 500).",
     )
     parser.add_argument(
         "--feed-id",
@@ -78,6 +114,30 @@ def main() -> None:
         help="Ignore departures after depart_time + horizon (default: 14400).",
     )
     parser.add_argument(
+        "--disable-walking",
+        action="store_true",
+        help="Disable synthetic walking transfer edges between nearby stops.",
+    )
+    parser.add_argument(
+        "--walk-max-distance-m",
+        type=int,
+        default=500,
+        help="Maximum walking link distance in meters (default: 500).",
+    )
+    parser.add_argument(
+        "--walk-speed-mps",
+        type=float,
+        default=0.7,
+        # Lower than typical 1.4 m/s to compensate for indirect pedestrian paths.
+        help="Walking speed in meters/sec used to estimate walk time (default: 0.7).",
+    )
+    parser.add_argument(
+        "--walk-max-neighbors",
+        type=int,
+        default=10,
+        help="Maximum synthetic walking neighbors per stop (default: 10).",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="Run cProfile and print a summary of the slowest functions.",
@@ -111,7 +171,12 @@ def main() -> None:
         action="store_true",
         help="Treat transfers as bidirectional edges.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+    args = _build_parser().parse_args()
 
     profiler: cProfile.Profile | None = None
     if args.profile:
@@ -120,94 +185,41 @@ def main() -> None:
 
     try:
         session = Database().session()
-        feed_id = resolve_feed_id(session, args.feed_id)
-
-        if args.from_stop_id:
-            row = (
-                session.query(Stop.stop_id, Stop.stop_name)
-                .filter(Stop.feed_id == feed_id)
-                .filter(Stop.stop_id == args.from_stop_id)
-                .first()
-            )
-            if not row:
-                raise SystemExit(f"Unknown from stop_id: {args.from_stop_id}")
-            from_stop_id, from_stop_name = row[0], row[1] or row[0]
-        else:
-            from_stop_id, from_stop_name = resolve_stop_by_name(
-                session, feed_id, args.from_stop
-            )
-
-        if args.to_stop_id:
-            row = (
-                session.query(Stop.stop_id, Stop.stop_name)
-                .filter(Stop.feed_id == feed_id)
-                .filter(Stop.stop_id == args.to_stop_id)
-                .first()
-            )
-            if not row:
-                raise SystemExit(f"Unknown to stop_id: {args.to_stop_id}")
-            to_stop_id, to_stop_name = row[0], row[1] or row[0]
-        else:
-            to_stop_id, to_stop_name = resolve_stop_by_name(
-                session, feed_id, args.to_stop
-            )
-
-        depart_time_sec = parse_time_to_seconds(args.depart_time)
-        if depart_time_sec is None:
-            raise SystemExit("Invalid --depart-time. Expected HH:MM:SS.")
-
-        from_parent_id, from_parent_name = resolve_parent_stop(
-            session, feed_id, from_stop_id
-        )
-        to_parent_id, to_parent_name = resolve_parent_stop(session, feed_id, to_stop_id)
-        from_stop_name = from_parent_name or from_stop_name
-        to_stop_name = to_parent_name or to_stop_name
-
-        cache_path = Path(args.graph_cache) if args.graph_cache else None
-        rebuild_cache = args.rebuild or args.rebuild_graph_cache
-        graph, cache_logs = access_or_create_graph_cache(
+        result = find_best_route_and_itinerary(
             session=session,
-            feed_id=feed_id,
-            cache_path=cache_path,
-            graph_cache_version=graph_cache_version,
-            rebuild_cache=rebuild_cache,
-            symmetric_transfers=args.symmetric_transfers,
+            request=RoutePlannerRequest(
+                from_stop_name=args.from_stop,
+                to_stop_name=args.to_stop,
+                from_stop_id=args.from_stop_id,
+                to_stop_id=args.to_stop_id,
+                from_lat=args.from_lat,
+                from_lon=args.from_lon,
+                to_lat=args.to_lat,
+                to_lon=args.to_lon,
+                coord_max_candidates=args.coord_max_candidates,
+                coord_max_distance_m=args.coord_max_distance_m,
+                feed_id=args.feed_id,
+                rebuild=args.rebuild,
+                assume_zero_missing=args.assume_zero_missing,
+                depart_time=args.depart_time,
+                transfer_penalty_sec=args.transfer_penalty,
+                route_change_penalty_sec=args.route_change_penalty,
+                state_by=args.state_by,
+                time_horizon_sec=args.time_horizon_sec,
+                disable_walking=args.disable_walking,
+                walk_max_distance_m=args.walk_max_distance_m,
+                walk_speed_mps=args.walk_speed_mps,
+                walk_max_neighbors=args.walk_max_neighbors,
+                graph_cache_path=Path(args.graph_cache) if args.graph_cache else None,
+                rebuild_graph_cache=args.rebuild_graph_cache,
+                symmetric_transfers=args.symmetric_transfers,
+            ),
         )
-        for line in cache_logs:
+        for line in result.cache_logs:
             print(line)
-
-        result = td_dijkstra(
-            graph=graph,
-            start_id=from_parent_id,
-            goal_id=to_parent_id,
-            depart_time_str=args.depart_time,
-            assume_zero_missing=args.assume_zero_missing,
-            transfer_penalty_sec=args.transfer_penalty,
-            route_change_penalty_sec=args.route_change_penalty,
-            time_horizon_sec=args.time_horizon_sec,
-            state_by=args.state_by,
-        )
-
-        if result.arrival_time_sec is None:
-            raise SystemExit(
-                f"No path found from '{from_stop_name}' to '{to_stop_name}'."
-            )
-
-        stop_names, route_short_names = create_itinerary_data(
-            session=session,
-            feed_id=feed_id,
-            stop_ids=result.stop_path,
-        )
-        itinerary = create_itinerary(
-            result=result,
-            from_stop_name=from_stop_name,
-            to_stop_name=to_stop_name,
-            depart_time_str=args.depart_time,
-            stop_names=stop_names,
-            route_short_names=route_short_names,
-            transfer_penalty_sec=args.transfer_penalty,
-        )
-        for line in itinerary.lines():
+        for line in result.context_lines:
+            print(line)
+        for line in result.itinerary.lines():
             print(line)
     finally:
         if profiler:

@@ -212,9 +212,9 @@ def upgrade() -> None:
                         PARTITION BY feed_id, shape_id, shape_pt_sequence
                         ORDER BY ctid
                         ) AS rn
-                FROM gtfs.shapes
+                from gtfs.shapes
                 )
-                DELETE FROM gtfs.shapes
+                DELETE from gtfs.shapes
                 WHERE ctid IN (
                 SELECT ctid FROM ranked WHERE rn > 1
                 );

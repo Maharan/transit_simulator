@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import Float, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from gtfs.models import Base
+from core.gtfs.models import Base
 
 
 class GraphEdge(Base):

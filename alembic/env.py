@@ -9,11 +9,11 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-# Add src/ to sys.path so we can import gtfs.models
+# Add src/ to sys.path so we can import core.gtfs.models
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from gtfs.models import Base  # noqa: E402
+from core.gtfs.models import Base  # noqa: E402
 
 
 config = context.config

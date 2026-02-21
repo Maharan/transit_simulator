@@ -26,13 +26,10 @@ dependencies = [
 
 [tool.poetry]
 packages = [
-    { include = "graph", from = "src" },
-    { include = "gtfs", from = "src" },
+    { include = "core", from = "src" },
     { include = "hamburg_twin", from = "src" },
-    { include = "metrics", from = "src" },
-    { include = "routing", from = "src" },
-    { include = "rt", from = "src" },
-    { include = "viz", from = "src" }
+    { include = "infra", from = "src" },
+    { include = "rt", from = "src" }
 ]
 
 

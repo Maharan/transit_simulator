@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gtfs.models import Stop
+from core.gtfs.models import Stop
 
 
 def resolve_parent_stop(session, feed_id: str, stop_id: str) -> tuple[str, str | None]:

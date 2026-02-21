@@ -6,8 +6,8 @@ import math
 from dataclasses import dataclass
 from bisect import bisect_left
 
-from routing.types import GraphLike
-from routing.utils import parse_time_to_seconds, seconds_to_time_str
+from core.routing.types import GraphLike
+from core.routing.utils import parse_time_to_seconds, seconds_to_time_str
 
 
 @dataclass(frozen=True)

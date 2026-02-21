@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from routing.types import ResultLike
-from routing.utils import parse_time_to_seconds, seconds_to_time_str
+from core.routing.types import ResultLike
+from core.routing.utils import parse_time_to_seconds, seconds_to_time_str
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -159,8 +159,11 @@ class ItineraryBuilder:
                 if transfer_time is not None and apply_penalty:
                     transfer_time += self._transfer_penalty_sec
                 transfer_label = "Transfer"
-                if getattr(edge, "label", None) == "station_link":
+                edge_label = getattr(edge, "label", None)
+                if edge_label == "station_link":
                     transfer_label = "Station link"
+                elif edge_label == "walk":
+                    transfer_label = "Walk"
                 legs.append(
                     f"{transfer_label} from {from_name} to {to_name} "
                     f"({self._format_duration(transfer_time)})"
@@ -223,7 +226,7 @@ def create_itinerary_data(
     feed_id: str,
     stop_ids: list[str],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    from gtfs.models import Route, Stop
+    from core.gtfs.models import Route, Stop
 
     route_rows = (
         session.query(Route.route_id, Route.route_short_name)

@@ -5,9 +5,14 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from graph.models import GraphEdge, GraphNode
-from graph.synthetic_edge import SyntheticEdge
-from gtfs.models import Stop, StopTime, Transfer, Trip
+from core.graph.models import GraphEdge, GraphNode
+from core.graph.synthetic_edge import SyntheticEdge
+from core.graph.walk import WALK_EDGE_LABEL, build_walk_edges
+from core.gtfs.models import Stop, StopTime, Transfer, Trip
+
+DEFAULT_WALK_MAX_DISTANCE_M = 500
+DEFAULT_WALK_SPEED_MPS = 1.4
+DEFAULT_WALK_MAX_NEIGHBORS = 8
 
 
 @dataclass(frozen=True)
@@ -95,10 +100,71 @@ def _edge_timing(
     return weight, dep_sec, arr_sec
 
 
+def _load_parent_stop_coords(
+    session: Session,
+    feed_id: str,
+    *,
+    known_nodes: set[str] | None = None,
+) -> dict[str, tuple[float, float]]:
+    rows = (
+        session.query(Stop.stop_id, Stop.parent_station, Stop.stop_lat, Stop.stop_lon)
+        .filter(Stop.feed_id == feed_id)
+        .yield_per(5000)
+    )
+    parent_stop_coords: dict[str, tuple[float, float]] = {}
+    for stop_id, parent_station, stop_lat, stop_lon in rows:
+        if not stop_id or stop_lat is None or stop_lon is None:
+            continue
+        node_id = parent_station or stop_id
+        if known_nodes is not None and node_id not in known_nodes:
+            continue
+        parent_stop_coords.setdefault(node_id, (float(stop_lat), float(stop_lon)))
+    return parent_stop_coords
+
+
+def _add_walk_edges(
+    *,
+    graph: Graph,
+    stop_coords: dict[str, tuple[float, float]],
+    walk_max_distance_m: int,
+    walk_speed_mps: float,
+    walk_max_neighbors: int,
+) -> int:
+    existing_edges = {
+        (from_stop_id, edge.to_stop_id)
+        for from_stop_id, edges in graph.transfer_edges.items()
+        for edge in edges
+    }
+    walk_edge_specs = build_walk_edges(
+        stop_coords=stop_coords,
+        max_distance_m=walk_max_distance_m,
+        walking_speed_mps=walk_speed_mps,
+        max_neighbors=walk_max_neighbors,
+        existing_edges=existing_edges,
+    )
+    for spec in walk_edge_specs:
+        graph.add_edge(
+            spec.from_stop_id,
+            Edge(
+                to_stop_id=spec.to_stop_id,
+                weight_sec=spec.duration_sec,
+                kind="transfer",
+                transfer_type=None,
+                apply_penalty=False,
+                label=WALK_EDGE_LABEL,
+            ),
+        )
+    return len(walk_edge_specs)
+
+
 def build_graph_from_gtfs(
     session: Session,
     feed_id: str,
     symmetric_transfers: bool = False,
+    enable_walking: bool = True,
+    walk_max_distance_m: int = DEFAULT_WALK_MAX_DISTANCE_M,
+    walk_speed_mps: float = DEFAULT_WALK_SPEED_MPS,
+    walk_max_neighbors: int = DEFAULT_WALK_MAX_NEIGHBORS,
     progress: bool = False,
     progress_every: int = 5000,
 ) -> tuple[Graph, list[GraphEdge]]:
@@ -115,15 +181,20 @@ def build_graph_from_gtfs(
     )
     parent_map: dict[str, str] = {}
     parent_pairs: list[tuple[str, str]] = []
+    parent_stop_coords: dict[str, tuple[float, float]] = {}
     stop_count = 0
     for stop_id, stop_lat, stop_lon, parent_station in stops:
         if not stop_id:
             continue
         if parent_station:
-            parent_map[stop_id] = parent_station
+            node_id = parent_station
+            parent_map[stop_id] = node_id
             parent_pairs.append((stop_id, parent_station))
         else:
-            parent_map[stop_id] = stop_id
+            node_id = stop_id
+            parent_map[stop_id] = node_id
+        if stop_lat is not None and stop_lon is not None:
+            parent_stop_coords.setdefault(node_id, (float(stop_lat), float(stop_lon)))
         graph.add_node(stop_id, stop_lat, stop_lon)
         stop_count += 1
         if progress and stop_count % progress_every == 0:
@@ -324,6 +395,17 @@ def build_graph_from_gtfs(
                 )
             )
 
+    if enable_walking:
+        walk_edge_count = _add_walk_edges(
+            graph=graph,
+            stop_coords=parent_stop_coords,
+            walk_max_distance_m=walk_max_distance_m,
+            walk_speed_mps=walk_speed_mps,
+            walk_max_neighbors=walk_max_neighbors,
+        )
+        if progress:
+            print(f"Added {walk_edge_count} walking edges.")
+
     if parent_pairs:
         parent_edge_count = 0
         for child_id, parent_id in parent_pairs:
@@ -383,12 +465,20 @@ class GraphCache(object):
         feed_id: str,
         rebuild: bool = False,
         symmetric_transfers: bool = False,
+        enable_walking: bool = True,
+        walk_max_distance_m: int = DEFAULT_WALK_MAX_DISTANCE_M,
+        walk_speed_mps: float = DEFAULT_WALK_SPEED_MPS,
+        walk_max_neighbors: int = DEFAULT_WALK_MAX_NEIGHBORS,
         progress: bool = False,
         progress_every: int = 5000,
     ) -> None:
         self._session = session
         self._feed_id = feed_id
         self._symmetric_transfers = symmetric_transfers
+        self._enable_walking = enable_walking
+        self._walk_max_distance_m = walk_max_distance_m
+        self._walk_speed_mps = walk_speed_mps
+        self._walk_max_neighbors = walk_max_neighbors
         self._progress = progress
         self._progress_every = progress_every
         self._ensure_cache_table()
@@ -412,6 +502,10 @@ class GraphCache(object):
             session=self._session,
             feed_id=self._feed_id,
             symmetric_transfers=self._symmetric_transfers,
+            enable_walking=self._enable_walking,
+            walk_max_distance_m=self._walk_max_distance_m,
+            walk_speed_mps=self._walk_speed_mps,
+            walk_max_neighbors=self._walk_max_neighbors,
             progress=self._progress,
             progress_every=self._progress_every,
         )
@@ -468,6 +562,18 @@ class GraphCache(object):
         trip_bucket_entries: dict[
             tuple[str, str], list[tuple[int, int, str | None, str | None]]
         ] = {}
+        time_cache: dict[str, int | None] = {}
+
+        def _cached_time_to_seconds(time_str: str | None) -> int | None:
+            if time_str is None:
+                return None
+            cached = time_cache.get(time_str)
+            if cached is not None or time_str in time_cache:
+                return cached
+            parsed = _time_to_seconds(time_str)
+            time_cache[time_str] = parsed
+            return parsed
+
         nodes = (
             self._session.query(
                 GraphNode.stop_id, GraphNode.stop_lat, GraphNode.stop_lon
@@ -506,55 +612,75 @@ class GraphCache(object):
                 self._session.flush()
 
         cached_edges = (
-            self._session.query(GraphEdge)
+            self._session.query(
+                GraphEdge.from_stop_id,
+                GraphEdge.to_stop_id,
+                GraphEdge.kind,
+                GraphEdge.weight_sec,
+                GraphEdge.trip_id,
+                GraphEdge.route_id,
+                GraphEdge.service_id,
+                GraphEdge.dep_time,
+                GraphEdge.arr_time,
+                GraphEdge.transfer_type,
+                GraphEdge.stop_sequence,
+            )
             .filter(GraphEdge.feed_id == self._feed_id)
             .order_by(GraphEdge.id)
-            .yield_per(5000)
+            .yield_per(20000)
         )
-        for edge in cached_edges:
-            if (
-                edge.kind == "transfer"
-                and edge.transfer_type == 2
-                and (edge.weight_sec or 0) == 0
-            ):
+        for (
+            from_stop_id,
+            to_stop_id,
+            kind,
+            weight_sec,
+            trip_id,
+            route_id,
+            service_id,
+            dep_time,
+            arr_time,
+            transfer_type,
+            stop_sequence,
+        ) in cached_edges:
+            if not from_stop_id or not to_stop_id:
+                continue
+            if kind == "transfer" and transfer_type == 2 and (weight_sec or 0) == 0:
                 graph.add_edge(
-                    edge.from_stop_id,
-                    SyntheticEdge.from_edge(
-                        edge, label="station_link", apply_penalty=False
+                    from_stop_id,
+                    SyntheticEdge(
+                        to_stop_id=to_stop_id,
+                        weight_sec=weight_sec,
+                        transfer_type=transfer_type,
+                        label="station_link",
+                        apply_penalty=False,
                     ),
                 )
                 continue
-            dep_sec = _time_to_seconds(edge.dep_time)
-            arr_sec = _time_to_seconds(edge.arr_time)
+            dep_sec = _cached_time_to_seconds(dep_time)
+            arr_sec = _cached_time_to_seconds(arr_time)
             graph.add_edge(
-                edge.from_stop_id,
+                from_stop_id,
                 Edge(
-                    to_stop_id=edge.to_stop_id,
-                    weight_sec=edge.weight_sec,
-                    kind=edge.kind,
-                    trip_id=edge.trip_id,
-                    route_id=edge.route_id,
-                    service_id=edge.service_id,
-                    dep_time=edge.dep_time,
-                    arr_time=edge.arr_time,
+                    to_stop_id=to_stop_id,
+                    weight_sec=weight_sec,
+                    kind=kind,
+                    trip_id=trip_id,
+                    route_id=route_id,
+                    service_id=service_id,
+                    dep_time=dep_time,
+                    arr_time=arr_time,
                     dep_time_sec=dep_sec,
                     arr_time_sec=arr_sec,
-                    transfer_type=edge.transfer_type,
-                    stop_sequence=edge.stop_sequence,
+                    transfer_type=transfer_type,
+                    stop_sequence=stop_sequence,
                     apply_penalty=True,
                     label=None,
                 ),
             )
-            if (
-                edge.kind == "trip"
-                and dep_sec is not None
-                and arr_sec is not None
-                and edge.from_stop_id is not None
-                and edge.to_stop_id is not None
-            ):
-                key = (edge.from_stop_id, edge.to_stop_id)
+            if kind == "trip" and dep_sec is not None and arr_sec is not None:
+                key = (from_stop_id, to_stop_id)
                 trip_bucket_entries.setdefault(key, []).append(
-                    (dep_sec, arr_sec, edge.trip_id, edge.route_id)
+                    (dep_sec, arr_sec, trip_id, route_id)
                 )
         if trip_bucket_entries:
             for (from_node, to_node), entries in trip_bucket_entries.items():
@@ -573,4 +699,18 @@ class GraphCache(object):
                         last_dep=dep_secs[-1],
                     )
                 )
+
+        if self._enable_walking:
+            parent_stop_coords = _load_parent_stop_coords(
+                self._session,
+                self._feed_id,
+                known_nodes=set(graph.nodes.keys()),
+            )
+            _add_walk_edges(
+                graph=graph,
+                stop_coords=parent_stop_coords,
+                walk_max_distance_m=self._walk_max_distance_m,
+                walk_speed_mps=self._walk_speed_mps,
+                walk_max_neighbors=self._walk_max_neighbors,
+            )
         return graph

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from gtfs import ingest_all_gtfs
+from core.gtfs import ingest_all_gtfs
 
 
 def main() -> None:
