@@ -65,3 +65,19 @@ def test_itinerary_formats_walk_and_trip_legs() -> None:
 
     assert any("Walk from Start to Mid" in line for line in lines)
     assert any("Ride S1 from Mid to End" in line for line in lines)
+    assert [stop.stop_id for stop in itinerary.stops] == ["A", "B", "C"]
+    assert [stop.stop_name for stop in itinerary.stops] == ["Start", "Mid", "End"]
+    assert len(itinerary.path_segments) == 2
+    assert itinerary.path_segments[0].from_stop.stop_id == "A"
+    assert itinerary.path_segments[0].to_stop.stop_id == "B"
+    assert itinerary.path_segments[0].edge.kind == "transfer"
+    assert itinerary.path_segments[1].edge.kind == "trip"
+    assert itinerary.path_segments[1].edge.route == "S1"
+    assert itinerary.legs[0].mode == "walk"
+    assert itinerary.legs[0].from_stop == "Start"
+    assert itinerary.legs[0].to_stop == "Mid"
+    assert itinerary.legs[0].duration_sec == 120
+    assert itinerary.legs[1].mode == "ride"
+    assert itinerary.legs[1].route == "S1"
+    assert itinerary.legs[1].from_stop == "Mid"
+    assert itinerary.legs[1].to_stop == "End"

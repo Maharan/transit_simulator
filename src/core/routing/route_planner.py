@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.graph.caching import access_or_create_graph_cache
+from core.graph.caching import InMemoryGraphCache, access_or_create_graph_cache
 from core.graph.utils import resolve_parent_stop
 from core.gtfs.models import Stop
 from core.gtfs.utils import (
@@ -90,6 +90,7 @@ def find_best_route_and_itinerary(
     *,
     session: "Session",
     request: RoutePlannerRequest,
+    in_memory_graph_cache: InMemoryGraphCache | None = None,
 ) -> RoutePlannerResult:
     feed_id = resolve_feed_id(session, request.feed_id)
 
@@ -166,6 +167,7 @@ def find_best_route_and_itinerary(
         walk_max_distance_m=request.walk_max_distance_m,
         walk_speed_mps=request.walk_speed_mps,
         walk_max_neighbors=request.walk_max_neighbors,
+        in_memory_cache=in_memory_graph_cache,
     )
 
     best_plan: RoutePlan | None = None

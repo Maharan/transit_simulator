@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from core.routing.types import ResultLike
@@ -14,8 +14,11 @@ if TYPE_CHECKING:
 class Itinerary:
     summary: str
     timing: str
-    path_lines: list[str]
-    leg_lines: list[str]
+    path_lines: list[str] = field(default_factory=list)
+    leg_lines: list[str] = field(default_factory=list)
+    stops: list["ItineraryStop"] = field(default_factory=list)
+    path_segments: list["ItineraryPathSegment"] = field(default_factory=list)
+    legs: list["ItineraryLeg"] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         lines = [self.summary, self.timing]
@@ -64,31 +67,96 @@ class ItineraryBuilder:
             f"Arrive: {self._format_seconds(result.arrival_time_sec)}"
         )
 
-        path_lines = self._build_path_lines(result)
-        leg_lines = self._build_leg_lines(result)
+        stops = self._build_stops(result)
+        path_segments = self._build_path_segments(
+            stops=stops, edge_path=result.edge_path
+        )
+        path_lines = self._build_path_lines(path_segments)
+        legs = self._build_legs(result)
+        leg_lines = self._build_leg_lines(legs)
         return Itinerary(
             summary=summary,
             timing=timing,
+            stops=stops,
+            path_segments=path_segments,
             path_lines=path_lines,
             leg_lines=leg_lines,
+            legs=legs,
         )
 
-    def _build_path_lines(self, result: ResultLike) -> list[str]:
-        if not result.stop_path or not result.edge_path:
+    def _build_stops(self, result: ResultLike) -> list["ItineraryStop"]:
+        if not result.stop_path:
+            return []
+        return [
+            ItineraryStop(
+                stop_id=stop_id,
+                stop_name=self._stop_names.get(stop_id, stop_id),
+            )
+            for stop_id in result.stop_path
+        ]
+
+    def _build_path_segments(
+        self,
+        *,
+        stops: list["ItineraryStop"],
+        edge_path,
+    ) -> list["ItineraryPathSegment"]:
+        if not stops or not edge_path:
+            return []
+        segments: list[ItineraryPathSegment] = []
+        for index, edge in enumerate(edge_path):
+            if index + 1 >= len(stops):
+                break
+            from_stop = stops[index]
+            to_stop = stops[index + 1]
+            route = None
+            if edge.route_id:
+                route = self._route_short_names.get(edge.route_id) or edge.route_id
+            segments.append(
+                ItineraryPathSegment(
+                    from_stop=from_stop,
+                    to_stop=to_stop,
+                    edge=ItineraryPathEdge(
+                        kind=edge.kind,
+                        label=getattr(edge, "label", None),
+                        weight_sec=edge.weight_sec,
+                        route=route,
+                        route_id=edge.route_id,
+                        trip_id=edge.trip_id,
+                        dep_time=edge.dep_time,
+                        arr_time=edge.arr_time,
+                        dep_time_sec=edge.dep_time_sec,
+                        arr_time_sec=edge.arr_time_sec,
+                        transfer_type=edge.transfer_type,
+                        apply_penalty=getattr(edge, "apply_penalty", True),
+                    ),
+                )
+            )
+        return segments
+
+    def _build_path_lines(
+        self,
+        path_segments: list["ItineraryPathSegment"],
+    ) -> list[str]:
+        if not path_segments:
             return []
         lines: list[str] = []
-        for index, edge in enumerate(result.edge_path):
-            from_id = result.stop_path[index]
-            to_id = result.stop_path[index + 1]
-            from_name = self._stop_names.get(from_id, from_id)
-            to_name = self._stop_names.get(to_id, to_id)
-            lines.append(f"  {from_name} ({from_id})")
-            lines.append(f"    -> {to_name} ({to_id}) [{self._format_edge(edge)}]")
+        for segment in path_segments:
+            lines.append(
+                f"  {segment.from_stop.stop_name} ({segment.from_stop.stop_id})"
+            )
+            lines.append(
+                "    -> "
+                f"{segment.to_stop.stop_name} ({segment.to_stop.stop_id}) "
+                f"[{self._format_edge(segment.edge)}]"
+            )
         return lines
 
-    def _build_leg_lines(self, result: ResultLike) -> list[str]:
-        legs = self._summarize_legs(result.edge_path, result.stop_path)
-        return [f"  {leg}" for leg in legs]
+    def _build_legs(self, result: ResultLike) -> list["ItineraryLeg"]:
+        return self._summarize_legs(result.edge_path, result.stop_path)
+
+    def _build_leg_lines(self, legs: list["ItineraryLeg"]) -> list[str]:
+        return [f"  {leg.text}" for leg in legs]
 
     def _format_seconds(self, total_seconds: int | None) -> str:
         if total_seconds is None:
@@ -108,7 +176,10 @@ class ItineraryBuilder:
         label = getattr(edge, "label", None)
         parts: list[str] = [label or edge.kind]
         if edge.kind == "trip":
-            if edge.route_id:
+            route_label = getattr(edge, "route", None)
+            if route_label:
+                parts.append(f"route={route_label}")
+            elif edge.route_id:
                 route_short = self._route_short_names.get(edge.route_id)
                 if route_short:
                     parts.append(f"route={route_short}")
@@ -132,8 +203,8 @@ class ItineraryBuilder:
             parts.append(f"+{self._transfer_penalty_sec}s penalty")
         return ", ".join(parts)
 
-    def _summarize_legs(self, edge_path, stop_path) -> list[str]:
-        legs: list[str] = []
+    def _summarize_legs(self, edge_path, stop_path) -> list["ItineraryLeg"]:
+        legs: list[ItineraryLeg] = []
         current_route: str | None = None
         leg_start_name: str | None = None
         leg_time_sec: int | None = 0
@@ -147,9 +218,13 @@ class ItineraryBuilder:
             if edge.kind == "transfer":
                 if current_route:
                     legs.append(
-                        "Ride "
-                        f"{current_route} from {leg_start_name} to {from_name} "
-                        f"({self._format_duration(leg_time_sec)})"
+                        self._create_leg(
+                            mode="ride",
+                            from_stop=leg_start_name,
+                            to_stop=from_name,
+                            route=current_route,
+                            duration_sec=leg_time_sec,
+                        )
                     )
                     current_route = None
                     leg_start_name = None
@@ -165,8 +240,13 @@ class ItineraryBuilder:
                 elif edge_label == "walk":
                     transfer_label = "Walk"
                 legs.append(
-                    f"{transfer_label} from {from_name} to {to_name} "
-                    f"({self._format_duration(transfer_time)})"
+                    self._create_leg(
+                        mode=transfer_label.lower().replace(" ", "_"),
+                        from_stop=from_name,
+                        to_stop=to_name,
+                        route=None,
+                        duration_sec=transfer_time,
+                    )
                 )
                 continue
 
@@ -184,9 +264,13 @@ class ItineraryBuilder:
                     leg_time_sec = 0
                 elif current_route != route_label:
                     legs.append(
-                        "Ride "
-                        f"{current_route} from {leg_start_name} to {from_name} "
-                        f"({self._format_duration(leg_time_sec)})"
+                        self._create_leg(
+                            mode="ride",
+                            from_stop=leg_start_name,
+                            to_stop=from_name,
+                            route=current_route,
+                            duration_sec=leg_time_sec,
+                        )
                     )
                     current_route = route_label
                     leg_start_name = from_name
@@ -212,12 +296,84 @@ class ItineraryBuilder:
 
         if current_route:
             legs.append(
-                "Ride "
-                f"{current_route} from {leg_start_name} to "
-                f"{self._stop_names.get(stop_path[-1], stop_path[-1])} "
-                f"({self._format_duration(leg_time_sec)})"
+                self._create_leg(
+                    mode="ride",
+                    from_stop=leg_start_name,
+                    to_stop=self._stop_names.get(stop_path[-1], stop_path[-1]),
+                    route=current_route,
+                    duration_sec=leg_time_sec,
+                )
             )
         return legs
+
+    def _create_leg(
+        self,
+        *,
+        mode: str,
+        from_stop: str | None,
+        to_stop: str | None,
+        route: str | None,
+        duration_sec: int | None,
+    ) -> "ItineraryLeg":
+        duration_min = None if duration_sec is None else duration_sec / 60.0
+        duration_label = self._format_duration(duration_sec)
+        if mode == "ride":
+            route_label = route or "unknown route"
+            text = (
+                f"Ride {route_label} from {from_stop} to {to_stop} ({duration_label})"
+            )
+        else:
+            mode_label = mode.replace("_", " ").title()
+            text = f"{mode_label} from {from_stop} to {to_stop} ({duration_label})"
+        return ItineraryLeg(
+            mode=mode,
+            from_stop=from_stop,
+            to_stop=to_stop,
+            route=route,
+            duration_sec=duration_sec,
+            duration_min=duration_min,
+            text=text,
+        )
+
+
+@dataclass(frozen=True)
+class ItineraryLeg:
+    mode: str
+    from_stop: str | None
+    to_stop: str | None
+    route: str | None
+    duration_sec: int | None
+    duration_min: float | None
+    text: str
+
+
+@dataclass(frozen=True)
+class ItineraryStop:
+    stop_id: str
+    stop_name: str
+
+
+@dataclass(frozen=True)
+class ItineraryPathEdge:
+    kind: str
+    label: str | None
+    weight_sec: int | None
+    route: str | None
+    route_id: str | None
+    trip_id: str | None
+    dep_time: str | None
+    arr_time: str | None
+    dep_time_sec: int | None
+    arr_time_sec: int | None
+    transfer_type: int | None
+    apply_penalty: bool
+
+
+@dataclass(frozen=True)
+class ItineraryPathSegment:
+    from_stop: ItineraryStop
+    to_stop: ItineraryStop
+    edge: ItineraryPathEdge
 
 
 def create_itinerary_data(

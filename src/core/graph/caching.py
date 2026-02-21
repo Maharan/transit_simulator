@@ -1,10 +1,79 @@
 from __future__ import annotations
 
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 from core.graph.build import GraphCache
 from core.graph.lite import GraphLite
+
+
+@dataclass(frozen=True)
+class GraphCacheKey:
+    feed_id: str
+    graph_cache_version: int
+    graph_options: tuple[tuple[str, object], ...]
+
+
+def _normalize_graph_options(
+    graph_options: dict[str, object] | None,
+) -> tuple[tuple[str, object], ...]:
+    if not graph_options:
+        return ()
+    return tuple(sorted(graph_options.items(), key=lambda item: item[0]))
+
+
+class InMemoryGraphCache:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._graphs: dict[GraphCacheKey, GraphLite] = {}
+
+    def get(
+        self,
+        *,
+        feed_id: str,
+        graph_cache_version: int,
+        graph_options: dict[str, object] | None = None,
+    ) -> GraphLite | None:
+        key = GraphCacheKey(
+            feed_id=feed_id,
+            graph_cache_version=graph_cache_version,
+            graph_options=_normalize_graph_options(graph_options),
+        )
+        with self._lock:
+            return self._graphs.get(key)
+
+    def set(
+        self,
+        *,
+        feed_id: str,
+        graph_cache_version: int,
+        graph_options: dict[str, object] | None = None,
+        graph: GraphLite,
+    ) -> None:
+        key = GraphCacheKey(
+            feed_id=feed_id,
+            graph_cache_version=graph_cache_version,
+            graph_options=_normalize_graph_options(graph_options),
+        )
+        with self._lock:
+            self._graphs[key] = graph
+
+    def delete(
+        self,
+        *,
+        feed_id: str,
+        graph_cache_version: int,
+        graph_options: dict[str, object] | None = None,
+    ) -> None:
+        key = GraphCacheKey(
+            feed_id=feed_id,
+            graph_cache_version=graph_cache_version,
+            graph_options=_normalize_graph_options(graph_options),
+        )
+        with self._lock:
+            self._graphs.pop(key, None)
 
 
 def get_pickle(
@@ -66,6 +135,7 @@ def access_or_create_graph_cache(
     walk_max_distance_m: int,
     walk_speed_mps: float,
     walk_max_neighbors: int,
+    in_memory_cache: InMemoryGraphCache | None = None,
 ) -> tuple[GraphLite, list[str]]:
     log_lines: list[str] = []
     graph = None
@@ -77,7 +147,23 @@ def access_or_create_graph_cache(
         "symmetric_transfers": symmetric_transfers,
     }
 
-    if cache_path and cache_path.exists() and not rebuild_cache:
+    if in_memory_cache:
+        if rebuild_cache:
+            in_memory_cache.delete(
+                feed_id=feed_id,
+                graph_cache_version=graph_cache_version,
+                graph_options=graph_options,
+            )
+        else:
+            graph = in_memory_cache.get(
+                feed_id=feed_id,
+                graph_cache_version=graph_cache_version,
+                graph_options=graph_options,
+            )
+            if graph is not None:
+                log_lines.append("Loaded graph from in-memory cache.")
+
+    if graph is None and cache_path and cache_path.exists() and not rebuild_cache:
         graph = get_pickle(
             cache_path=cache_path,
             feed_id=feed_id,
@@ -111,5 +197,14 @@ def access_or_create_graph_cache(
                 graph=graph,
             )
             log_lines.append(f"Wrote graph pickle: {cache_path}")
+
+    if in_memory_cache and graph is not None:
+        in_memory_cache.set(
+            feed_id=feed_id,
+            graph_cache_version=graph_cache_version,
+            graph_options=graph_options,
+            graph=graph,
+        )
+        log_lines.append("Stored graph in in-memory cache.")
 
     return graph, log_lines

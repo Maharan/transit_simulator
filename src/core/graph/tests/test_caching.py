@@ -157,3 +157,92 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
     assert any("Ignoring graph pickle" in line for line in log_lines)
     assert any("Loaded graph from DB cache." in line for line in log_lines)
     assert any("Wrote graph pickle" in line for line in log_lines)
+
+
+def test_access_or_create_graph_cache_uses_in_memory_when_available(monkeypatch):
+    in_memory_cache = caching_module.InMemoryGraphCache()
+    options = {
+        "enable_walking": True,
+        "walk_max_distance_m": 500,
+        "walk_speed_mps": 1.4,
+        "walk_max_neighbors": 8,
+        "symmetric_transfers": False,
+    }
+    expected_graph = {"graph": "in-memory"}
+    in_memory_cache.set(
+        feed_id="feed-1",
+        graph_cache_version=6,
+        graph_options=options,
+        graph=expected_graph,
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError(
+            "GraphCache should not be called when memory cache matches."
+        )
+
+    monkeypatch.setattr(caching_module, "GraphCache", fail_if_called)
+
+    graph, log_lines = caching_module.access_or_create_graph_cache(
+        session=object(),
+        feed_id="feed-1",
+        cache_path=None,
+        graph_cache_version=6,
+        rebuild_cache=False,
+        symmetric_transfers=False,
+        enable_walking=True,
+        walk_max_distance_m=500,
+        walk_speed_mps=1.4,
+        walk_max_neighbors=8,
+        in_memory_cache=in_memory_cache,
+    )
+
+    assert graph == expected_graph
+    assert any("Loaded graph from in-memory cache." in line for line in log_lines)
+
+
+def test_access_or_create_graph_cache_stores_graph_in_memory_after_build(
+    monkeypatch,
+) -> None:
+    in_memory_cache = caching_module.InMemoryGraphCache()
+    options = {
+        "enable_walking": True,
+        "walk_max_distance_m": 700,
+        "walk_speed_mps": 1.5,
+        "walk_max_neighbors": 5,
+        "symmetric_transfers": True,
+    }
+
+    class FakeGraphCache:
+        def __init__(self, **_kwargs):
+            self.graph = {"raw": "graph"}
+
+    monkeypatch.setattr(caching_module, "GraphCache", FakeGraphCache)
+    monkeypatch.setattr(
+        caching_module.GraphLite,
+        "from_graph",
+        staticmethod(lambda graph: {"lite": graph}),
+    )
+
+    graph, log_lines = caching_module.access_or_create_graph_cache(
+        session="db-session",
+        feed_id="feed-1",
+        cache_path=None,
+        graph_cache_version=6,
+        rebuild_cache=False,
+        symmetric_transfers=options["symmetric_transfers"],
+        enable_walking=options["enable_walking"],
+        walk_max_distance_m=options["walk_max_distance_m"],
+        walk_speed_mps=options["walk_speed_mps"],
+        walk_max_neighbors=options["walk_max_neighbors"],
+        in_memory_cache=in_memory_cache,
+    )
+
+    cached_graph = in_memory_cache.get(
+        feed_id="feed-1",
+        graph_cache_version=6,
+        graph_options=options,
+    )
+    assert graph == {"lite": {"raw": "graph"}}
+    assert cached_graph == graph
+    assert any("Stored graph in in-memory cache." in line for line in log_lines)

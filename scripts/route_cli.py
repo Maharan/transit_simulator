@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from core.routing.output import build_output_lines
 from core.routing.route_planner import (
     RoutePlannerRequest,
     find_best_route_and_itinerary,
@@ -162,6 +163,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to a pickle file used to cache the in-memory graph.",
     )
     parser.add_argument(
+        "--show-cache-logs",
+        action="store_true",
+        help="Print cache source/write logs before itinerary output.",
+    )
+    parser.add_argument(
+        "--show-candidate-evaluation",
+        action="store_true",
+        help="Print coordinate candidate pair evaluation summary lines.",
+    )
+    parser.add_argument(
         "--rebuild-graph-cache",
         action="store_true",
         help="Rebuild and overwrite the pickle graph cache if --graph-cache is set.",
@@ -215,11 +226,14 @@ def main() -> None:
                 symmetric_transfers=args.symmetric_transfers,
             ),
         )
-        for line in result.cache_logs:
-            print(line)
-        for line in result.context_lines:
-            print(line)
-        for line in result.itinerary.lines():
+        output_lines = build_output_lines(
+            cache_logs=result.cache_logs,
+            context_lines=result.context_lines,
+            itinerary_lines=result.itinerary.lines(),
+            include_cache_logs=args.show_cache_logs,
+            include_candidate_evaluation=args.show_candidate_evaluation,
+        )
+        for line in output_lines:
             print(line)
     finally:
         if profiler:

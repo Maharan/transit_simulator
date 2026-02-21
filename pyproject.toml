@@ -19,6 +19,8 @@ dependencies = [
     "folium (>=0.20.0,<0.21.0)",
     "matplotlib (>=3.10.8,<4.0.0)",
     "httpx (>=0.28.1,<0.29.0)",
+    "fastapi (>=0.116.1,<1.0.0)",
+    "uvicorn (>=0.35.0,<1.0.0)",
     "protobuf (>=6.33.5,<7.0.0)",
     "pre-commit (>=4.5.1,<5.0.0)",
     "psycopg2-binary (>=2.9.11,<3.0.0)"
@@ -27,9 +29,8 @@ dependencies = [
 [tool.poetry]
 packages = [
     { include = "core", from = "src" },
-    { include = "hamburg_twin", from = "src" },
     { include = "infra", from = "src" },
-    { include = "rt", from = "src" }
+    { include = "hamburg_twin", from = "src/use_cases" }
 ]
 
 
