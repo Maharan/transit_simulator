@@ -20,14 +20,30 @@ class Edge:
     service_id: str | None = None
     dep_time: str | None = None
     arr_time: str | None = None
+    dep_time_sec: int | None = None
+    arr_time_sec: int | None = None
     transfer_type: int | None = None
     stop_sequence: int | None = None
+    apply_penalty: bool = True
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class TripBucket:
+    to_stop_id: str
+    dep_secs: list[int]
+    arr_secs: list[int]
+    trip_ids: list[str | None]
+    route_ids: list[str | None]
+    last_dep: int
 
 
 class Graph(object):
     def __init__(self) -> None:
         self.nodes: dict[str, dict[str, float | None]] = {}
         self.adjacency: dict[str, list[Edge]] = defaultdict(list)
+        self.transfer_edges: dict[str, list[Edge]] = defaultdict(list)
+        self.trip_buckets: dict[str, list[TripBucket]] = defaultdict(list)
 
     def add_node(
         self, stop_id: str, stop_lat: float | None, stop_lon: float | None
@@ -36,9 +52,17 @@ class Graph(object):
 
     def add_edge(self, from_stop_id: str, edge: Edge) -> None:
         self.adjacency[from_stop_id].append(edge)
+        if edge.kind == "transfer":
+            self.transfer_edges[from_stop_id].append(edge)
 
     def edges_from(self, stop_id: str) -> list[Edge]:
         return self.adjacency.get(stop_id, [])
+
+    def transfer_edges_from(self, stop_id: str) -> list[Edge]:
+        return self.transfer_edges.get(stop_id, [])
+
+    def trip_buckets_from(self, stop_id: str) -> list[TripBucket]:
+        return self.trip_buckets.get(stop_id, [])
 
 
 def _time_to_seconds(time_str: str | None) -> int | None:
@@ -58,15 +82,17 @@ def _time_to_seconds(time_str: str | None) -> int | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def _edge_weight(dep_time: str | None, arr_time: str | None) -> int | None:
+def _edge_timing(
+    dep_time: str | None, arr_time: str | None
+) -> tuple[int | None, int | None, int | None]:
     dep_sec = _time_to_seconds(dep_time)
     arr_sec = _time_to_seconds(arr_time)
     if dep_sec is None or arr_sec is None:
-        return None
+        return None, dep_sec, arr_sec
     weight = arr_sec - dep_sec
     if weight < 0:
-        return None
-    return weight
+        return None, dep_sec, arr_sec
+    return weight, dep_sec, arr_sec
 
 
 def build_graph_from_gtfs(
@@ -78,6 +104,9 @@ def build_graph_from_gtfs(
 ) -> tuple[Graph, list[GraphEdge]]:
     graph = Graph()
     edges: list[GraphEdge] = []
+    trip_bucket_entries: dict[
+        tuple[str, str], list[tuple[int, int, str | None, str | None]]
+    ] = {}
 
     stops = (
         session.query(Stop.stop_id, Stop.stop_lat, Stop.stop_lon, Stop.parent_station)
@@ -124,8 +153,12 @@ def build_graph_from_gtfs(
         service_id: str | None = None,
         dep_time: str | None = None,
         arr_time: str | None = None,
+        dep_time_sec: int | None = None,
+        arr_time_sec: int | None = None,
         transfer_type: int | None = None,
         stop_sequence: int | None = None,
+        apply_penalty: bool = True,
+        label: str | None = None,
     ) -> None:
         edge = Edge(
             to_stop_id=to_stop_id,
@@ -136,8 +169,12 @@ def build_graph_from_gtfs(
             service_id=service_id,
             dep_time=dep_time,
             arr_time=arr_time,
+            dep_time_sec=dep_time_sec,
+            arr_time_sec=arr_time_sec,
             transfer_type=transfer_type,
             stop_sequence=stop_sequence,
+            apply_penalty=apply_penalty,
+            label=label,
         )
         graph.add_edge(from_stop_id, edge)
         edges.append(
@@ -232,7 +269,7 @@ def build_graph_from_gtfs(
         if prev_stop_id:
             dep_time = prev_departure_time or prev_arrival_time
             arr_time = arrival_time or departure_time
-            weight_sec = _edge_weight(dep_time, arr_time)
+            weight_sec, dep_sec, arr_sec = _edge_timing(dep_time, arr_time)
             route_id, service_id = trip_meta.get(trip_id, (None, None))
             from_node = parent_map.get(prev_stop_id, prev_stop_id)
             to_node = parent_map.get(stop_id, stop_id)
@@ -247,9 +284,16 @@ def build_graph_from_gtfs(
                     service_id=service_id,
                     dep_time=dep_time,
                     arr_time=arr_time,
+                    dep_time_sec=dep_sec,
+                    arr_time_sec=arr_sec,
                     stop_sequence=prev_stop_sequence,
                 )
                 edge_count += 1
+                if dep_sec is not None and arr_sec is not None:
+                    key = (from_node, to_node)
+                    trip_bucket_entries.setdefault(key, []).append(
+                        (dep_sec, arr_sec, trip_id, route_id)
+                    )
 
         prev_stop_id = stop_id
         prev_stop_sequence = stop_sequence
@@ -261,6 +305,24 @@ def build_graph_from_gtfs(
     if progress:
         print(f"Scanned {stop_time_count} stop_times rows total.")
         print(f"Built {edge_count} trip edges.")
+
+    if trip_bucket_entries:
+        for (from_node, to_node), entries in trip_bucket_entries.items():
+            entries.sort(key=lambda item: item[0])
+            dep_secs = [item[0] for item in entries]
+            arr_secs = [item[1] for item in entries]
+            trip_ids = [item[2] for item in entries]
+            route_ids = [item[3] for item in entries]
+            graph.trip_buckets[from_node].append(
+                TripBucket(
+                    to_stop_id=to_node,
+                    dep_secs=dep_secs,
+                    arr_secs=arr_secs,
+                    trip_ids=trip_ids,
+                    route_ids=route_ids,
+                    last_dep=dep_secs[-1],
+                )
+            )
 
     if parent_pairs:
         parent_edge_count = 0
@@ -403,6 +465,9 @@ class GraphCache(object):
 
     def _load_graph_from_cache(self) -> Graph:
         graph = Graph()
+        trip_bucket_entries: dict[
+            tuple[str, str], list[tuple[int, int, str | None, str | None]]
+        ] = {}
         nodes = (
             self._session.query(
                 GraphNode.stop_id, GraphNode.stop_lat, GraphNode.stop_lon
@@ -459,6 +524,8 @@ class GraphCache(object):
                     ),
                 )
                 continue
+            dep_sec = _time_to_seconds(edge.dep_time)
+            arr_sec = _time_to_seconds(edge.arr_time)
             graph.add_edge(
                 edge.from_stop_id,
                 Edge(
@@ -470,8 +537,40 @@ class GraphCache(object):
                     service_id=edge.service_id,
                     dep_time=edge.dep_time,
                     arr_time=edge.arr_time,
+                    dep_time_sec=dep_sec,
+                    arr_time_sec=arr_sec,
                     transfer_type=edge.transfer_type,
                     stop_sequence=edge.stop_sequence,
+                    apply_penalty=True,
+                    label=None,
                 ),
             )
+            if (
+                edge.kind == "trip"
+                and dep_sec is not None
+                and arr_sec is not None
+                and edge.from_stop_id is not None
+                and edge.to_stop_id is not None
+            ):
+                key = (edge.from_stop_id, edge.to_stop_id)
+                trip_bucket_entries.setdefault(key, []).append(
+                    (dep_sec, arr_sec, edge.trip_id, edge.route_id)
+                )
+        if trip_bucket_entries:
+            for (from_node, to_node), entries in trip_bucket_entries.items():
+                entries.sort(key=lambda item: item[0])
+                dep_secs = [item[0] for item in entries]
+                arr_secs = [item[1] for item in entries]
+                trip_ids = [item[2] for item in entries]
+                route_ids = [item[3] for item in entries]
+                graph.trip_buckets[from_node].append(
+                    TripBucket(
+                        to_stop_id=to_node,
+                        dep_secs=dep_secs,
+                        arr_secs=arr_secs,
+                        trip_ids=trip_ids,
+                        route_ids=route_ids,
+                        last_dep=dep_secs[-1],
+                    )
+                )
         return graph

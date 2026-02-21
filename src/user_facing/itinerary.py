@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from routing.types import ResultLike
-from routing.utils import parse_time_to_seconds
+from routing.utils import parse_time_to_seconds, seconds_to_time_str
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,11 @@ class ItineraryBuilder:
                 parts.append(f"trip={edge.trip_id}")
             if edge.dep_time and edge.arr_time:
                 parts.append(f"{edge.dep_time}->{edge.arr_time}")
+            elif edge.dep_time_sec is not None and edge.arr_time_sec is not None:
+                dep_str = seconds_to_time_str(edge.dep_time_sec)
+                arr_str = seconds_to_time_str(edge.arr_time_sec)
+                if dep_str and arr_str:
+                    parts.append(f"{dep_str}->{arr_str}")
         if edge.kind == "transfer" and edge.transfer_type is not None:
             parts.append(f"type={edge.transfer_type}")
         if edge.weight_sec is not None:
@@ -182,8 +191,11 @@ class ItineraryBuilder:
 
                 edge_duration = edge.weight_sec
                 if edge_duration is None:
-                    dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
-                    arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))
+                    dep_sec = edge.dep_time_sec
+                    arr_sec = edge.arr_time_sec
+                    if dep_sec is None or arr_sec is None:
+                        dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
+                        arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))
                     if (
                         dep_sec is not None
                         and arr_sec is not None
@@ -203,3 +215,55 @@ class ItineraryBuilder:
                 f"({self._format_duration(leg_time_sec)})"
             )
         return legs
+
+
+def create_itinerary_data(
+    *,
+    session: "Session",
+    feed_id: str,
+    stop_ids: list[str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    from gtfs.models import Route, Stop
+
+    route_rows = (
+        session.query(Route.route_id, Route.route_short_name)
+        .filter(Route.feed_id == feed_id)
+        .all()
+    )
+    route_short_names = {
+        route_id: route_short_name
+        for route_id, route_short_name in route_rows
+        if route_id and route_short_name
+    }
+
+    stop_name_rows = (
+        session.query(Stop.stop_id, Stop.stop_name)
+        .filter(Stop.feed_id == feed_id)
+        .filter(Stop.stop_id.in_(stop_ids))
+        .all()
+    )
+    stop_names = {stop_id: stop_name for stop_id, stop_name in stop_name_rows}
+    return stop_names, route_short_names
+
+
+def create_itinerary(
+    *,
+    result: ResultLike,
+    from_stop_name: str,
+    to_stop_name: str,
+    depart_time_str: str,
+    stop_names: dict[str, str],
+    route_short_names: dict[str, str],
+    transfer_penalty_sec: int,
+) -> Itinerary:
+    builder = ItineraryBuilder(
+        stop_names=stop_names,
+        route_short_names=route_short_names,
+        transfer_penalty_sec=transfer_penalty_sec,
+    )
+    return builder.build(
+        result,
+        from_stop_name=from_stop_name,
+        to_stop_name=to_stop_name,
+        depart_time_str=depart_time_str,
+    )

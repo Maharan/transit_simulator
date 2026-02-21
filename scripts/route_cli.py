@@ -1,73 +1,23 @@
 from __future__ import annotations
 
 import argparse
-import pickle
+import cProfile
+import pstats
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import func
-
-from graph import GraphCache
-from user_facing.itinerary import ItineraryBuilder
+from graph.caching import access_or_create_graph_cache
+from graph.utils import resolve_parent_stop
+from gtfs.utils import resolve_feed_id, resolve_stop_by_name
+from user_facing.itinerary import create_itinerary, create_itinerary_data
 from routing.td_dijkstra import td_dijkstra
 from routing.utils import parse_time_to_seconds
-from gtfs.models import Route, Stop
+from gtfs.models import Stop
 from infra import Database
 
 
-def _resolve_feed_id(session, requested_feed_id: str | None) -> str:
-    if requested_feed_id:
-        return requested_feed_id
-    rows = session.query(Stop.feed_id).distinct().all()
-    feed_ids = [row[0] for row in rows if row[0]]
-    if len(feed_ids) == 1:
-        return feed_ids[0]
-    if not feed_ids:
-        raise SystemExit("No feeds found in gtfs.stops.")
-    raise SystemExit(
-        "Multiple feeds found. Provide --feed-id. "
-        f"Available: {', '.join(sorted(feed_ids))}"
-    )
-
-
-def _resolve_stop_by_name(session, feed_id: str, name: str) -> tuple[str, str]:
-    normalized = name.strip().lower()
-    if not normalized:
-        raise SystemExit("Stop name cannot be empty.")
-
-    exact = (
-        session.query(Stop.stop_id, Stop.stop_name)
-        .filter(Stop.feed_id == feed_id)
-        .filter(Stop.stop_name.isnot(None))
-        .filter(func.lower(Stop.stop_name) == normalized)
-        .all()
-    )
-    if len(exact) == 1:
-        return exact[0][0], exact[0][1]
-    if len(exact) > 1:
-        options = ", ".join(f"{row[1]} ({row[0]})" for row in exact[:10])
-        raise SystemExit(
-            f"Multiple stops match '{name}'. Be more specific. Examples: {options}"
-        )
-
-    like = (
-        session.query(Stop.stop_id, Stop.stop_name)
-        .filter(Stop.feed_id == feed_id)
-        .filter(Stop.stop_name.isnot(None))
-        .filter(func.lower(Stop.stop_name).like(f"%{normalized}%"))
-        .all()
-    )
-    if len(like) == 1:
-        return like[0][0], like[0][1]
-    if not like:
-        raise SystemExit(f"No stops found matching '{name}'.")
-    options = ", ".join(f"{row[1]} ({row[0]})" for row in like[:10])
-    raise SystemExit(
-        f"Multiple stops match '{name}'. Be more specific. Examples: {options}"
-    )
-
-
 def main() -> None:
+    graph_cache_version = 5
     load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
     parser = argparse.ArgumentParser(
         description="Compute travel time between two stops using cached graph edges."
@@ -116,6 +66,38 @@ def main() -> None:
         "(default: transfer penalty).",
     )
     parser.add_argument(
+        "--state-by",
+        choices=["route", "trip"],
+        default="route",
+        help="Track state by route_id or trip_id (default: route).",
+    )
+    parser.add_argument(
+        "--time-horizon-sec",
+        type=int,
+        default=4 * 3600,
+        help="Ignore departures after depart_time + horizon (default: 14400).",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Run cProfile and print a summary of the slowest functions.",
+    )
+    parser.add_argument(
+        "--profile-sort",
+        default="cumtime",
+        help="Sort key for profiling stats (default: cumtime).",
+    )
+    parser.add_argument(
+        "--profile-top",
+        type=int,
+        default=40,
+        help="How many profiling lines to print (default: 40).",
+    )
+    parser.add_argument(
+        "--profile-output",
+        help="Optional path to write a .pstats file.",
+    )
+    parser.add_argument(
         "--graph-cache",
         help="Path to a pickle file used to cache the in-memory graph.",
     )
@@ -131,139 +113,110 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    session = Database().session()
-    feed_id = _resolve_feed_id(session, args.feed_id)
+    profiler: cProfile.Profile | None = None
+    if args.profile:
+        profiler = cProfile.Profile()
+        profiler.enable()
 
-    if args.from_stop_id:
-        row = (
-            session.query(Stop.stop_id, Stop.stop_name)
-            .filter(Stop.feed_id == feed_id)
-            .filter(Stop.stop_id == args.from_stop_id)
-            .first()
-        )
-        if not row:
-            raise SystemExit(f"Unknown from stop_id: {args.from_stop_id}")
-        from_stop_id, from_stop_name = row[0], row[1] or row[0]
-    else:
-        from_stop_id, from_stop_name = _resolve_stop_by_name(
-            session, feed_id, args.from_stop
-        )
+    try:
+        session = Database().session()
+        feed_id = resolve_feed_id(session, args.feed_id)
 
-    if args.to_stop_id:
-        row = (
-            session.query(Stop.stop_id, Stop.stop_name)
-            .filter(Stop.feed_id == feed_id)
-            .filter(Stop.stop_id == args.to_stop_id)
-            .first()
-        )
-        if not row:
-            raise SystemExit(f"Unknown to stop_id: {args.to_stop_id}")
-        to_stop_id, to_stop_name = row[0], row[1] or row[0]
-    else:
-        to_stop_id, to_stop_name = _resolve_stop_by_name(session, feed_id, args.to_stop)
-
-    depart_time_sec = parse_time_to_seconds(args.depart_time)
-    if depart_time_sec is None:
-        raise SystemExit("Invalid --depart-time. Expected HH:MM:SS.")
-
-    def _resolve_parent_stop(stop_id: str) -> tuple[str, str | None]:
-        row = (
-            session.query(Stop.stop_id, Stop.parent_station)
-            .filter(Stop.feed_id == feed_id)
-            .filter(Stop.stop_id == stop_id)
-            .first()
-        )
-        if row and row[1]:
-            parent_id = row[1]
-            parent_name_row = (
-                session.query(Stop.stop_name)
+        if args.from_stop_id:
+            row = (
+                session.query(Stop.stop_id, Stop.stop_name)
                 .filter(Stop.feed_id == feed_id)
-                .filter(Stop.stop_id == parent_id)
+                .filter(Stop.stop_id == args.from_stop_id)
                 .first()
             )
-            return parent_id, parent_name_row[0] if parent_name_row else parent_id
-        return stop_id, None
+            if not row:
+                raise SystemExit(f"Unknown from stop_id: {args.from_stop_id}")
+            from_stop_id, from_stop_name = row[0], row[1] or row[0]
+        else:
+            from_stop_id, from_stop_name = resolve_stop_by_name(
+                session, feed_id, args.from_stop
+            )
 
-    from_parent_id, from_parent_name = _resolve_parent_stop(from_stop_id)
-    to_parent_id, to_parent_name = _resolve_parent_stop(to_stop_id)
-    from_stop_name = from_parent_name or from_stop_name
-    to_stop_name = to_parent_name or to_stop_name
+        if args.to_stop_id:
+            row = (
+                session.query(Stop.stop_id, Stop.stop_name)
+                .filter(Stop.feed_id == feed_id)
+                .filter(Stop.stop_id == args.to_stop_id)
+                .first()
+            )
+            if not row:
+                raise SystemExit(f"Unknown to stop_id: {args.to_stop_id}")
+            to_stop_id, to_stop_name = row[0], row[1] or row[0]
+        else:
+            to_stop_id, to_stop_name = resolve_stop_by_name(
+                session, feed_id, args.to_stop
+            )
 
-    graph = None
-    cache_path = Path(args.graph_cache) if args.graph_cache else None
-    rebuild_cache = args.rebuild or args.rebuild_graph_cache
+        depart_time_sec = parse_time_to_seconds(args.depart_time)
+        if depart_time_sec is None:
+            raise SystemExit("Invalid --depart-time. Expected HH:MM:SS.")
 
-    if cache_path and cache_path.exists() and not rebuild_cache:
-        try:
-            with cache_path.open("rb") as handle:
-                payload = pickle.load(handle)
-            if isinstance(payload, dict) and payload.get("feed_id") == feed_id:
-                graph = payload.get("graph")
-        except Exception:
-            graph = None
+        from_parent_id, from_parent_name = resolve_parent_stop(
+            session, feed_id, from_stop_id
+        )
+        to_parent_id, to_parent_name = resolve_parent_stop(session, feed_id, to_stop_id)
+        from_stop_name = from_parent_name or from_stop_name
+        to_stop_name = to_parent_name or to_stop_name
 
-    if graph is None:
-        cache = GraphCache(
+        cache_path = Path(args.graph_cache) if args.graph_cache else None
+        rebuild_cache = args.rebuild or args.rebuild_graph_cache
+        graph, cache_logs = access_or_create_graph_cache(
             session=session,
             feed_id=feed_id,
-            rebuild=rebuild_cache,
+            cache_path=cache_path,
+            graph_cache_version=graph_cache_version,
+            rebuild_cache=rebuild_cache,
             symmetric_transfers=args.symmetric_transfers,
         )
-        graph = cache.graph
-        if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with cache_path.open("wb") as handle:
-                pickle.dump(
-                    {"feed_id": feed_id, "graph": graph},
-                    handle,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
+        for line in cache_logs:
+            print(line)
 
-    result = td_dijkstra(
-        graph=graph,
-        start_id=from_parent_id,
-        goal_id=to_parent_id,
-        depart_time_str=args.depart_time,
-        assume_zero_missing=args.assume_zero_missing,
-        transfer_penalty_sec=args.transfer_penalty,
-        route_change_penalty_sec=args.route_change_penalty,
-    )
+        result = td_dijkstra(
+            graph=graph,
+            start_id=from_parent_id,
+            goal_id=to_parent_id,
+            depart_time_str=args.depart_time,
+            assume_zero_missing=args.assume_zero_missing,
+            transfer_penalty_sec=args.transfer_penalty,
+            route_change_penalty_sec=args.route_change_penalty,
+            time_horizon_sec=args.time_horizon_sec,
+            state_by=args.state_by,
+        )
 
-    if result.arrival_time_sec is None:
-        raise SystemExit(f"No path found from '{from_stop_name}' to '{to_stop_name}'.")
+        if result.arrival_time_sec is None:
+            raise SystemExit(
+                f"No path found from '{from_stop_name}' to '{to_stop_name}'."
+            )
 
-    route_rows = (
-        session.query(Route.route_id, Route.route_short_name)
-        .filter(Route.feed_id == feed_id)
-        .all()
-    )
-    route_short_names = {
-        route_id: route_short_name
-        for route_id, route_short_name in route_rows
-        if route_id and route_short_name
-    }
-
-    stop_name_rows = (
-        session.query(Stop.stop_id, Stop.stop_name)
-        .filter(Stop.feed_id == feed_id)
-        .filter(Stop.stop_id.in_(result.stop_path))
-        .all()
-    )
-    stop_names = {stop_id: stop_name for stop_id, stop_name in stop_name_rows}
-
-    builder = ItineraryBuilder(
-        stop_names=stop_names,
-        route_short_names=route_short_names,
-        transfer_penalty_sec=args.transfer_penalty,
-    )
-    itinerary = builder.build(
-        result,
-        from_stop_name=from_stop_name,
-        to_stop_name=to_stop_name,
-        depart_time_str=args.depart_time,
-    )
-    for line in itinerary.lines():
-        print(line)
+        stop_names, route_short_names = create_itinerary_data(
+            session=session,
+            feed_id=feed_id,
+            stop_ids=result.stop_path,
+        )
+        itinerary = create_itinerary(
+            result=result,
+            from_stop_name=from_stop_name,
+            to_stop_name=to_stop_name,
+            depart_time_str=args.depart_time,
+            stop_names=stop_names,
+            route_short_names=route_short_names,
+            transfer_penalty_sec=args.transfer_penalty,
+        )
+        for line in itinerary.lines():
+            print(line)
+    finally:
+        if profiler:
+            profiler.disable()
+            if args.profile_output:
+                pstats.Stats(profiler).dump_stats(args.profile_output)
+            stats = pstats.Stats(profiler).sort_stats(args.profile_sort)
+            print("\nProfile summary:")
+            stats.print_stats(args.profile_top)
 
 
 if __name__ == "__main__":

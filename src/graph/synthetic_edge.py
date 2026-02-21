@@ -14,6 +14,8 @@ class SyntheticEdge:
     trip_id: str | None = None
     dep_time: str | None = None
     arr_time: str | None = None
+    dep_time_sec: int | None = None
+    arr_time_sec: int | None = None
     transfer_type: int | None = None
     apply_penalty: bool = False
     label: str | None = None
@@ -35,6 +37,8 @@ class SyntheticEdge:
             trip_id=getattr(edge, "trip_id", None),
             dep_time=getattr(edge, "dep_time", None),
             arr_time=getattr(edge, "arr_time", None),
+            dep_time_sec=getattr(edge, "dep_time_sec", None),
+            arr_time_sec=getattr(edge, "arr_time_sec", None),
             transfer_type=getattr(edge, "transfer_type", None),
             apply_penalty=apply_penalty
             if apply_penalty is not None

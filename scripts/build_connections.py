@@ -7,23 +7,8 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 
 from graph import GraphCache, GraphEdge, GraphNode
-from gtfs.models import Stop
+from gtfs.utils import resolve_feed_id
 from infra import Database
-
-
-def _resolve_feed_id(session, requested_feed_id: str | None) -> str:
-    if requested_feed_id:
-        return requested_feed_id
-    rows = session.query(Stop.feed_id).distinct().all()
-    feed_ids = [row[0] for row in rows if row[0]]
-    if len(feed_ids) == 1:
-        return feed_ids[0]
-    if not feed_ids:
-        raise SystemExit("No feeds found in gtfs.stops.")
-    raise SystemExit(
-        "Multiple feeds found. Provide --feed-id. "
-        f"Available: {', '.join(sorted(feed_ids))}"
-    )
 
 
 def main() -> None:
@@ -78,7 +63,7 @@ def main() -> None:
     args = parser.parse_args()
 
     session = Database().session()
-    feed_id = _resolve_feed_id(session, args.feed_id)
+    feed_id = resolve_feed_id(session, args.feed_id)
 
     GraphCache(
         session=session,
