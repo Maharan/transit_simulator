@@ -75,7 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
     args = _build_parser().parse_args()
     service = RouteService(args)
 

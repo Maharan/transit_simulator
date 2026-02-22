@@ -9,7 +9,7 @@ from core.gtfs import ingest_all_gtfs
 
 
 def main() -> None:
-    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
     parser = argparse.ArgumentParser(description="Load GTFS feeds into Postgres.")
     parser.add_argument(
         "--dry-run",

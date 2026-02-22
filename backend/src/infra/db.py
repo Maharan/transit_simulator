@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[3] / ".env")
 
 
 class Database(object):

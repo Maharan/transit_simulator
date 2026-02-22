@@ -12,7 +12,7 @@ from infra import Database
 
 
 def main() -> None:
-    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
     parser = argparse.ArgumentParser(
         description="Build or rebuild cached graph nodes/edges from GTFS tables."
     )

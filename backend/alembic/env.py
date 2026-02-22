@@ -9,15 +9,15 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-# Add src/ to sys.path so we can import core.gtfs.models
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "src"))
+# Add src/ to sys.path so we can import core.gtfs.models.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT / "src"))
 
 from core.gtfs.models import Base  # noqa: E402
 
 
 config = context.config
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

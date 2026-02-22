@@ -1,8 +1,14 @@
 .env
-files/*
+backend/files/*
 docker-compose.yml
-error.log
+backend/error.log
 __pycache__/
 */__pycache__/
-.cache
+backend/.cache/
+backend/.pytest_cache/
+backend/.ruff_cache/
 AGENTS.md
+HANDOVER.md
+frontend/node_modules/
+frontend/dist/
+frontend/.next/
