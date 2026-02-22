@@ -49,11 +49,13 @@ def test_access_or_create_graph_cache_uses_pickle_when_available(tmp_path, monke
     cache_path = tmp_path / "graph.pkl"
     expected_graph = {"graph": "from-pickle"}
     options = {
+        "graph_method": "multi_edge",
         "enable_walking": True,
         "walk_max_distance_m": 500,
         "walk_speed_mps": 1.4,
         "walk_max_neighbors": 8,
         "symmetric_transfers": False,
+        "anytime_default_headway_sec": None,
     }
     caching_module.create_pickle(
         cache_path=cache_path,
@@ -79,6 +81,7 @@ def test_access_or_create_graph_cache_uses_pickle_when_available(tmp_path, monke
         walk_max_distance_m=500,
         walk_speed_mps=1.4,
         walk_max_neighbors=8,
+        graph_method="multi_edge",
     )
     assert graph == expected_graph
     assert any("Loaded graph from pickle" in line for line in log_lines)
@@ -110,6 +113,8 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
             walk_max_distance_m,
             walk_speed_mps,
             walk_max_neighbors,
+            progress,
+            progress_every,
         ):
             captured["init"] = {
                 "session": session,
@@ -120,6 +125,8 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
                 "walk_max_distance_m": walk_max_distance_m,
                 "walk_speed_mps": walk_speed_mps,
                 "walk_max_neighbors": walk_max_neighbors,
+                "progress": progress,
+                "progress_every": progress_every,
             }
             self.graph = {"raw": "graph"}
 
@@ -141,6 +148,7 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
         walk_max_distance_m=600,
         walk_speed_mps=1.5,
         walk_max_neighbors=7,
+        graph_method="multi_edge",
     )
 
     assert graph == {"lite": {"raw": "graph"}}
@@ -153,6 +161,8 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
         "walk_max_distance_m": 600,
         "walk_speed_mps": 1.5,
         "walk_max_neighbors": 7,
+        "progress": False,
+        "progress_every": 5000,
     }
     assert any("Ignoring graph pickle" in line for line in log_lines)
     assert any("Loaded graph from DB cache." in line for line in log_lines)
@@ -162,11 +172,13 @@ def test_access_or_create_graph_cache_rebuilds_on_option_mismatch(
 def test_access_or_create_graph_cache_uses_in_memory_when_available(monkeypatch):
     in_memory_cache = caching_module.InMemoryGraphCache()
     options = {
+        "graph_method": "multi_edge",
         "enable_walking": True,
         "walk_max_distance_m": 500,
         "walk_speed_mps": 1.4,
         "walk_max_neighbors": 8,
         "symmetric_transfers": False,
+        "anytime_default_headway_sec": None,
     }
     expected_graph = {"graph": "in-memory"}
     in_memory_cache.set(
@@ -194,6 +206,7 @@ def test_access_or_create_graph_cache_uses_in_memory_when_available(monkeypatch)
         walk_max_distance_m=500,
         walk_speed_mps=1.4,
         walk_max_neighbors=8,
+        graph_method="multi_edge",
         in_memory_cache=in_memory_cache,
     )
 
@@ -206,11 +219,13 @@ def test_access_or_create_graph_cache_stores_graph_in_memory_after_build(
 ) -> None:
     in_memory_cache = caching_module.InMemoryGraphCache()
     options = {
+        "graph_method": "multi_edge",
         "enable_walking": True,
         "walk_max_distance_m": 700,
         "walk_speed_mps": 1.5,
         "walk_max_neighbors": 5,
         "symmetric_transfers": True,
+        "anytime_default_headway_sec": None,
     }
 
     class FakeGraphCache:
@@ -235,6 +250,7 @@ def test_access_or_create_graph_cache_stores_graph_in_memory_after_build(
         walk_max_distance_m=options["walk_max_distance_m"],
         walk_speed_mps=options["walk_speed_mps"],
         walk_max_neighbors=options["walk_max_neighbors"],
+        graph_method=options["graph_method"],
         in_memory_cache=in_memory_cache,
     )
 
@@ -246,3 +262,72 @@ def test_access_or_create_graph_cache_stores_graph_in_memory_after_build(
     assert graph == {"lite": {"raw": "graph"}}
     assert cached_graph == graph
     assert any("Stored graph in in-memory cache." in line for line in log_lines)
+
+
+def test_access_or_create_graph_cache_builds_trip_stop_graph(monkeypatch) -> None:
+    expected_graph = {"graph": "trip-stop"}
+
+    def fail_if_graph_cache_called(*_args, **_kwargs):
+        raise AssertionError(
+            "GraphCache should not be used for trip_stop graph_method."
+        )
+
+    monkeypatch.setattr(caching_module, "GraphCache", fail_if_graph_cache_called)
+    monkeypatch.setattr(
+        caching_module,
+        "build_trip_stop_graph_from_gtfs",
+        lambda **_kwargs: expected_graph,
+    )
+
+    graph, log_lines = caching_module.access_or_create_graph_cache(
+        session="db-session",
+        feed_id="feed-1",
+        cache_path=None,
+        graph_cache_version=6,
+        rebuild_cache=False,
+        symmetric_transfers=False,
+        enable_walking=True,
+        walk_max_distance_m=500,
+        walk_speed_mps=1.4,
+        walk_max_neighbors=8,
+        graph_method="trip_stop",
+    )
+
+    assert graph == expected_graph
+    assert any("Built trip-stop graph from GTFS." in line for line in log_lines)
+
+
+def test_access_or_create_graph_cache_builds_trip_stop_anytime_graph(
+    monkeypatch,
+) -> None:
+    expected_graph = {"graph": "trip-stop-anytime"}
+    captured: dict[str, object] = {}
+
+    def fake_build_trip_stop_anytime_graph_from_gtfs(**kwargs):
+        captured["kwargs"] = kwargs
+        return expected_graph
+
+    monkeypatch.setattr(
+        caching_module,
+        "build_trip_stop_anytime_graph_from_gtfs",
+        fake_build_trip_stop_anytime_graph_from_gtfs,
+    )
+
+    graph, log_lines = caching_module.access_or_create_graph_cache(
+        session="db-session",
+        feed_id="feed-1",
+        cache_path=None,
+        graph_cache_version=6,
+        rebuild_cache=False,
+        symmetric_transfers=False,
+        enable_walking=True,
+        walk_max_distance_m=500,
+        walk_speed_mps=1.4,
+        walk_max_neighbors=8,
+        graph_method="trip_stop_anytime",
+        anytime_default_headway_sec=900,
+    )
+
+    assert graph == expected_graph
+    assert captured["kwargs"]["default_headway_sec"] == 900
+    assert any("Built trip-stop anytime graph from GTFS." in line for line in log_lines)

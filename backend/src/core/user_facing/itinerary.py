@@ -110,8 +110,9 @@ class ItineraryBuilder:
             from_stop = stops[index]
             to_stop = stops[index + 1]
             route = None
-            if edge.route_id:
-                route = self._route_short_names.get(edge.route_id) or edge.route_id
+            edge_route_id = getattr(edge, "route_id", None)
+            if edge_route_id:
+                route = self._route_short_names.get(edge_route_id) or edge_route_id
             segments.append(
                 ItineraryPathSegment(
                     from_stop=from_stop,
@@ -119,15 +120,15 @@ class ItineraryBuilder:
                     edge=ItineraryPathEdge(
                         kind=edge.kind,
                         label=getattr(edge, "label", None),
-                        weight_sec=edge.weight_sec,
+                        weight_sec=getattr(edge, "weight_sec", None),
                         route=route,
-                        route_id=edge.route_id,
-                        trip_id=edge.trip_id,
-                        dep_time=edge.dep_time,
-                        arr_time=edge.arr_time,
-                        dep_time_sec=edge.dep_time_sec,
-                        arr_time_sec=edge.arr_time_sec,
-                        transfer_type=edge.transfer_type,
+                        route_id=edge_route_id,
+                        trip_id=getattr(edge, "trip_id", None),
+                        dep_time=getattr(edge, "dep_time", None),
+                        arr_time=getattr(edge, "arr_time", None),
+                        dep_time_sec=getattr(edge, "dep_time_sec", None),
+                        arr_time_sec=getattr(edge, "arr_time_sec", None),
+                        transfer_type=getattr(edge, "transfer_type", None),
                         apply_penalty=getattr(edge, "apply_penalty", True),
                     ),
                 )
@@ -175,29 +176,40 @@ class ItineraryBuilder:
     def _format_edge(self, edge) -> str:
         label = getattr(edge, "label", None)
         parts: list[str] = [label or edge.kind]
-        if edge.kind == "trip":
+        if edge.kind in {"trip", "ride"}:
             route_label = getattr(edge, "route", None)
+            edge_route_id = getattr(edge, "route_id", None)
             if route_label:
                 parts.append(f"route={route_label}")
-            elif edge.route_id:
-                route_short = self._route_short_names.get(edge.route_id)
+            elif edge_route_id:
+                route_short = self._route_short_names.get(edge_route_id)
                 if route_short:
                     parts.append(f"route={route_short}")
                 else:
-                    parts.append(f"route={edge.route_id}")
-            if edge.trip_id:
-                parts.append(f"trip={edge.trip_id}")
-            if edge.dep_time and edge.arr_time:
-                parts.append(f"{edge.dep_time}->{edge.arr_time}")
-            elif edge.dep_time_sec is not None and edge.arr_time_sec is not None:
-                dep_str = seconds_to_time_str(edge.dep_time_sec)
-                arr_str = seconds_to_time_str(edge.arr_time_sec)
+                    parts.append(f"route={edge_route_id}")
+            edge_trip_id = getattr(edge, "trip_id", None)
+            if edge_trip_id:
+                parts.append(f"trip={edge_trip_id}")
+            edge_dep_time = getattr(edge, "dep_time", None)
+            edge_arr_time = getattr(edge, "arr_time", None)
+            edge_dep_time_sec = getattr(edge, "dep_time_sec", None)
+            edge_arr_time_sec = getattr(edge, "arr_time_sec", None)
+            if edge_dep_time and edge_arr_time:
+                parts.append(f"{edge_dep_time}->{edge_arr_time}")
+            elif edge_dep_time_sec is not None and edge_arr_time_sec is not None:
+                dep_str = seconds_to_time_str(edge_dep_time_sec)
+                arr_str = seconds_to_time_str(edge_arr_time_sec)
                 if dep_str and arr_str:
                     parts.append(f"{dep_str}->{arr_str}")
-        if edge.kind == "transfer" and edge.transfer_type is not None:
-            parts.append(f"type={edge.transfer_type}")
-        if edge.weight_sec is not None:
-            parts.append(f"{edge.weight_sec}s")
+        edge_transfer_type = getattr(edge, "transfer_type", None)
+        edge_weight_sec = getattr(edge, "weight_sec", None)
+        if edge.kind == "transfer" and edge_transfer_type is not None:
+            parts.append(f"type={edge_transfer_type}")
+        if edge_weight_sec is not None:
+            parts.append(f"{edge_weight_sec}s")
+        edge_headway_sec = getattr(edge, "headway_sec", None)
+        if edge.kind == "ride" and edge_headway_sec is not None:
+            parts.append(f"headway={edge_headway_sec}s")
         apply_penalty = getattr(edge, "apply_penalty", True)
         if edge.kind == "transfer" and self._transfer_penalty_sec and apply_penalty:
             parts.append(f"+{self._transfer_penalty_sec}s penalty")
@@ -250,10 +262,11 @@ class ItineraryBuilder:
                 )
                 continue
 
-            if edge.kind == "trip":
-                if edge.route_id:
+            if edge.kind in {"trip", "ride"}:
+                edge_route_id = getattr(edge, "route_id", None)
+                if edge_route_id:
                     route_label = (
-                        self._route_short_names.get(edge.route_id) or edge.route_id
+                        self._route_short_names.get(edge_route_id) or edge_route_id
                     )
                 else:
                     route_label = "unknown route"
@@ -276,10 +289,10 @@ class ItineraryBuilder:
                     leg_start_name = from_name
                     leg_time_sec = 0
 
-                edge_duration = edge.weight_sec
+                edge_duration = getattr(edge, "weight_sec", None)
                 if edge_duration is None:
-                    dep_sec = edge.dep_time_sec
-                    arr_sec = edge.arr_time_sec
+                    dep_sec = getattr(edge, "dep_time_sec", None)
+                    arr_sec = getattr(edge, "arr_time_sec", None)
                     if dep_sec is None or arr_sec is None:
                         dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
                         arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))

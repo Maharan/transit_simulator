@@ -5,8 +5,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from .base import BaseGraph
 from core.graph.models import GraphEdge, GraphNode
-from core.graph.synthetic_edge import SyntheticEdge
+from .synthetic_edge import SyntheticEdge
 from core.graph.walk import WALK_EDGE_LABEL, build_walk_edges
 from core.gtfs.models import Stop, StopTime, Transfer, Trip
 
@@ -16,7 +17,7 @@ DEFAULT_WALK_MAX_NEIGHBORS = 8
 
 
 @dataclass(frozen=True)
-class Edge:
+class MultiGraphEdge:
     to_stop_id: str
     weight_sec: int | None
     kind: str
@@ -34,7 +35,7 @@ class Edge:
 
 
 @dataclass(frozen=True)
-class TripBucket:
+class MultiGraphTripBucket:
     to_stop_id: str
     dep_secs: list[int]
     arr_secs: list[int]
@@ -43,31 +44,37 @@ class TripBucket:
     last_dep: int
 
 
-class Graph(object):
+class MultiGraph(BaseGraph):
     def __init__(self) -> None:
         self.nodes: dict[str, dict[str, float | None]] = {}
-        self.adjacency: dict[str, list[Edge]] = defaultdict(list)
-        self.transfer_edges: dict[str, list[Edge]] = defaultdict(list)
-        self.trip_buckets: dict[str, list[TripBucket]] = defaultdict(list)
+        self.adjacency: dict[str, list[MultiGraphEdge]] = defaultdict(list)
+        self.transfer_edges: dict[str, list[MultiGraphEdge]] = defaultdict(list)
+        self.trip_buckets: dict[str, list[MultiGraphTripBucket]] = defaultdict(list)
 
     def add_node(
         self, stop_id: str, stop_lat: float | None, stop_lon: float | None
     ) -> None:
         self.nodes[stop_id] = {"stop_lat": stop_lat, "stop_lon": stop_lon}
 
-    def add_edge(self, from_stop_id: str, edge: Edge) -> None:
+    def add_edge(self, from_stop_id: str, edge: MultiGraphEdge) -> None:
         self.adjacency[from_stop_id].append(edge)
         if edge.kind == "transfer":
             self.transfer_edges[from_stop_id].append(edge)
 
-    def edges_from(self, stop_id: str) -> list[Edge]:
+    def edges_from(self, stop_id: str) -> list[MultiGraphEdge]:
         return self.adjacency.get(stop_id, [])
 
-    def transfer_edges_from(self, stop_id: str) -> list[Edge]:
+    def transfer_edges_from(self, stop_id: str) -> list[MultiGraphEdge]:
         return self.transfer_edges.get(stop_id, [])
 
-    def trip_buckets_from(self, stop_id: str) -> list[TripBucket]:
+    def trip_buckets_from(self, stop_id: str) -> list[MultiGraphTripBucket]:
         return self.trip_buckets.get(stop_id, [])
+
+
+# Backward-compatible aliases for existing callers.
+Edge = MultiGraphEdge
+TripBucket = MultiGraphTripBucket
+Graph = MultiGraph
 
 
 def _time_to_seconds(time_str: str | None) -> int | None:
@@ -124,7 +131,7 @@ def _load_parent_stop_coords(
 
 def _add_walk_edges(
     *,
-    graph: Graph,
+    graph: MultiGraph,
     stop_coords: dict[str, tuple[float, float]],
     walk_max_distance_m: int,
     walk_speed_mps: float,
@@ -167,8 +174,8 @@ def build_graph_from_gtfs(
     walk_max_neighbors: int = DEFAULT_WALK_MAX_NEIGHBORS,
     progress: bool = False,
     progress_every: int = 5000,
-) -> tuple[Graph, list[GraphEdge]]:
-    graph = Graph()
+) -> tuple[MultiGraph, list[GraphEdge]]:
+    graph = MultiGraph()
     edges: list[GraphEdge] = []
     trip_bucket_entries: dict[
         tuple[str, str], list[tuple[int, int, str | None, str | None]]
@@ -488,15 +495,15 @@ class GraphCache(object):
             self._graph = self.load_or_build()
 
     @property
-    def graph(self) -> Graph:
+    def graph(self) -> MultiGraph:
         return self._graph
 
-    def load_or_build(self) -> Graph:
+    def load_or_build(self) -> MultiGraph:
         if self._has_cache():
             return self._load_graph_from_cache()
         return self.rebuild()
 
-    def rebuild(self) -> Graph:
+    def rebuild(self) -> MultiGraph:
         self._delete_cache()
         graph, edges = build_graph_from_gtfs(
             session=self._session,
@@ -557,8 +564,8 @@ class GraphCache(object):
         )
         self._session.flush()
 
-    def _load_graph_from_cache(self) -> Graph:
-        graph = Graph()
+    def _load_graph_from_cache(self) -> MultiGraph:
+        graph = MultiGraph()
         trip_bucket_entries: dict[
             tuple[str, str], list[tuple[int, int, str | None, str | None]]
         ] = {}

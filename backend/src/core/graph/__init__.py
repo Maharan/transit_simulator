@@ -1,13 +1,39 @@
 from __future__ import annotations
 
-from .build import Graph, GraphCache, build_graph_from_gtfs
+from .graph_methods import (
+    BaseGraph,
+    Edge,
+    Graph,
+    GraphCache,
+    MultiGraph,
+    MultiGraphEdge,
+    MultiGraphTripBucket,
+    SyntheticEdge,
+    TripBucket,
+    DEFAULT_SAME_STOP_TRANSFER_SEC,
+    TRIP_STOP_NODE_SEPARATOR,
+    TripStopAnytimeEdge,
+    TripStopAnytimeGraph,
+    TripStopEdge,
+    TripStopGraph,
+    build_graph_from_gtfs,
+    build_trip_stop_anytime_graph_from_gtfs,
+    build_trip_stop_graph_from_gtfs,
+    make_trip_stop_node_id,
+    split_trip_stop_node_id,
+)
 from .models import GraphEdge, GraphNode
-from .synthetic_edge import SyntheticEdge
 from .lite import GraphLite, TransferEdgeLite, TripBucketLite
 from .caching import access_or_create_graph_cache, create_pickle, get_pickle
 from .utils import resolve_parent_stop
 
 __all__ = [
+    "BaseGraph",
+    "MultiGraph",
+    "MultiGraphEdge",
+    "MultiGraphTripBucket",
+    "Edge",
+    "TripBucket",
     "Graph",
     "GraphCache",
     "GraphEdge",
@@ -21,4 +47,14 @@ __all__ = [
     "access_or_create_graph_cache",
     "resolve_parent_stop",
     "build_graph_from_gtfs",
+    "TripStopGraph",
+    "TripStopEdge",
+    "TRIP_STOP_NODE_SEPARATOR",
+    "DEFAULT_SAME_STOP_TRANSFER_SEC",
+    "make_trip_stop_node_id",
+    "split_trip_stop_node_id",
+    "build_trip_stop_graph_from_gtfs",
+    "TripStopAnytimeGraph",
+    "TripStopAnytimeEdge",
+    "build_trip_stop_anytime_graph_from_gtfs",
 ]

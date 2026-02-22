@@ -27,6 +27,7 @@ class RouteService:
             "status": "ok",
             "default_feed_id": self._args.feed_id,
             "graph_cache_version": self._args.graph_cache_version,
+            "default_graph_method": self._args.graph_method,
         }
 
     def preload(self, *, rebuild: bool) -> list[str]:
@@ -46,6 +47,10 @@ class RouteService:
                 walk_max_distance_m=self._args.walk_max_distance_m,
                 walk_speed_mps=self._args.walk_speed_mps,
                 walk_max_neighbors=self._args.walk_max_neighbors,
+                graph_method=self._args.graph_method,
+                anytime_default_headway_sec=self._args.anytime_default_headway_sec,
+                progress=bool(getattr(self._args, "progress", False)),
+                progress_every=int(getattr(self._args, "progress_every", 5000)),
                 in_memory_cache=self._graph_cache,
             )
             return logs

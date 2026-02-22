@@ -5,8 +5,43 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
-from core.graph.build import GraphCache
+from core.graph.graph_methods.multi_edge_graph import GraphCache
+from core.graph.graph_methods.trip_stop_anytime_graph import (
+    build_trip_stop_anytime_graph_from_gtfs,
+)
+from core.graph.graph_methods.trip_stop_graph import build_trip_stop_graph_from_gtfs
 from core.graph.lite import GraphLite
+
+GRAPH_METHOD_TRIP_STOP = "trip_stop"
+GRAPH_METHOD_MULTI_EDGE = "multi_edge"
+GRAPH_METHOD_TRIP_STOP_ANYTIME = "trip_stop_anytime"
+DEFAULT_GRAPH_METHOD = GRAPH_METHOD_TRIP_STOP
+SUPPORTED_GRAPH_METHODS: tuple[str, ...] = (
+    GRAPH_METHOD_TRIP_STOP,
+    GRAPH_METHOD_MULTI_EDGE,
+    GRAPH_METHOD_TRIP_STOP_ANYTIME,
+)
+
+GRAPH_METHOD_ALIASES: dict[str, str] = {
+    "trip_stop_schedule": GRAPH_METHOD_TRIP_STOP,
+    "trip_stop_graph": GRAPH_METHOD_TRIP_STOP,
+    "multi_edge_graph": GRAPH_METHOD_MULTI_EDGE,
+}
+
+
+def normalize_graph_method(graph_method: str | None) -> str:
+    if graph_method is None:
+        return DEFAULT_GRAPH_METHOD
+    normalized = graph_method.strip().lower()
+    if not normalized:
+        return DEFAULT_GRAPH_METHOD
+    normalized = GRAPH_METHOD_ALIASES.get(normalized, normalized)
+    if normalized not in SUPPORTED_GRAPH_METHODS:
+        supported = ", ".join(SUPPORTED_GRAPH_METHODS)
+        raise ValueError(
+            f"Unsupported graph_method '{graph_method}'. Supported values: {supported}."
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -27,7 +62,7 @@ def _normalize_graph_options(
 class InMemoryGraphCache:
     def __init__(self) -> None:
         self._lock = RLock()
-        self._graphs: dict[GraphCacheKey, GraphLite] = {}
+        self._graphs: dict[GraphCacheKey, object] = {}
 
     def get(
         self,
@@ -35,7 +70,7 @@ class InMemoryGraphCache:
         feed_id: str,
         graph_cache_version: int,
         graph_options: dict[str, object] | None = None,
-    ) -> GraphLite | None:
+    ) -> object | None:
         key = GraphCacheKey(
             feed_id=feed_id,
             graph_cache_version=graph_cache_version,
@@ -50,7 +85,7 @@ class InMemoryGraphCache:
         feed_id: str,
         graph_cache_version: int,
         graph_options: dict[str, object] | None = None,
-        graph: GraphLite,
+        graph: object,
     ) -> None:
         key = GraphCacheKey(
             feed_id=feed_id,
@@ -135,16 +170,25 @@ def access_or_create_graph_cache(
     walk_max_distance_m: int,
     walk_speed_mps: float,
     walk_max_neighbors: int,
+    graph_method: str = DEFAULT_GRAPH_METHOD,
+    anytime_default_headway_sec: int | None = None,
+    progress: bool = False,
+    progress_every: int = 5000,
     in_memory_cache: InMemoryGraphCache | None = None,
-) -> tuple[GraphLite, list[str]]:
+) -> tuple[object, list[str]]:
     log_lines: list[str] = []
+    graph_method = normalize_graph_method(graph_method)
     graph = None
     graph_options = {
+        "graph_method": graph_method,
         "enable_walking": enable_walking,
         "walk_max_distance_m": walk_max_distance_m,
         "walk_speed_mps": walk_speed_mps,
         "walk_max_neighbors": walk_max_neighbors,
         "symmetric_transfers": symmetric_transfers,
+        "anytime_default_headway_sec": anytime_default_headway_sec
+        if graph_method == GRAPH_METHOD_TRIP_STOP_ANYTIME
+        else None,
     }
 
     if in_memory_cache:
@@ -176,18 +220,50 @@ def access_or_create_graph_cache(
             log_lines.append("Ignoring graph pickle because cache options mismatch.")
 
     if graph is None:
-        cache = GraphCache(
-            session=session,
-            feed_id=feed_id,
-            rebuild=rebuild_cache,
-            symmetric_transfers=symmetric_transfers,
-            enable_walking=enable_walking,
-            walk_max_distance_m=walk_max_distance_m,
-            walk_speed_mps=walk_speed_mps,
-            walk_max_neighbors=walk_max_neighbors,
-        )
-        graph = GraphLite.from_graph(cache.graph)
-        log_lines.append("Loaded graph from DB cache.")
+        if graph_method == GRAPH_METHOD_MULTI_EDGE:
+            cache = GraphCache(
+                session=session,
+                feed_id=feed_id,
+                rebuild=rebuild_cache,
+                symmetric_transfers=symmetric_transfers,
+                enable_walking=enable_walking,
+                walk_max_distance_m=walk_max_distance_m,
+                walk_speed_mps=walk_speed_mps,
+                walk_max_neighbors=walk_max_neighbors,
+                progress=progress,
+                progress_every=progress_every,
+            )
+            graph = GraphLite.from_graph(cache.graph)
+            log_lines.append("Loaded graph from DB cache.")
+        elif graph_method == GRAPH_METHOD_TRIP_STOP:
+            graph = build_trip_stop_graph_from_gtfs(
+                session=session,
+                feed_id=feed_id,
+                symmetric_transfers=symmetric_transfers,
+                enable_walking=enable_walking,
+                walk_max_distance_m=walk_max_distance_m,
+                walk_speed_mps=walk_speed_mps,
+                walk_max_neighbors=walk_max_neighbors,
+                progress=progress,
+                progress_every=progress_every,
+            )
+            log_lines.append("Built trip-stop graph from GTFS.")
+        elif graph_method == GRAPH_METHOD_TRIP_STOP_ANYTIME:
+            graph = build_trip_stop_anytime_graph_from_gtfs(
+                session=session,
+                feed_id=feed_id,
+                symmetric_transfers=symmetric_transfers,
+                enable_walking=enable_walking,
+                walk_max_distance_m=walk_max_distance_m,
+                walk_speed_mps=walk_speed_mps,
+                walk_max_neighbors=walk_max_neighbors,
+                default_headway_sec=anytime_default_headway_sec,
+                progress=progress,
+                progress_every=progress_every,
+            )
+            log_lines.append("Built trip-stop anytime graph from GTFS.")
+        else:  # pragma: no cover - normalize_graph_method guards this.
+            raise ValueError(f"Unsupported graph_method '{graph_method}'.")
         if cache_path:
             create_pickle(
                 cache_path=cache_path,

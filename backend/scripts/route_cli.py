@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from core.graph.caching import DEFAULT_GRAPH_METHOD, SUPPORTED_GRAPH_METHODS
 from core.routing.output import build_output_lines
 from core.routing.route_planner import (
     RoutePlannerRequest,
@@ -182,6 +183,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Treat transfers as bidirectional edges.",
     )
+    parser.add_argument(
+        "--graph-method",
+        choices=SUPPORTED_GRAPH_METHODS,
+        default=DEFAULT_GRAPH_METHOD,
+        help="Graph implementation used for routing (default: trip_stop).",
+    )
+    parser.add_argument(
+        "--anytime-default-headway-sec",
+        type=int,
+        default=None,
+        help="Fallback headway for trip_stop_anytime when route headway is unknown.",
+    )
     return parser
 
 
@@ -224,6 +237,8 @@ def main() -> None:
                 graph_cache_path=Path(args.graph_cache) if args.graph_cache else None,
                 rebuild_graph_cache=args.rebuild_graph_cache,
                 symmetric_transfers=args.symmetric_transfers,
+                graph_method=args.graph_method,
+                anytime_default_headway_sec=args.anytime_default_headway_sec,
             ),
         )
         output_lines = build_output_lines(

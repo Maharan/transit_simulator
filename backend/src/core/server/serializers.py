@@ -7,6 +7,7 @@ class HealthResponse(BaseModel):
     status: str
     default_feed_id: str
     graph_cache_version: int
+    default_graph_method: str | None = None
 
 
 class EndpointCandidateResponse(BaseModel):
@@ -133,6 +134,8 @@ class RouteRequest(BaseModel):
     graph_cache_path: str | None = None
     rebuild_graph_cache: bool | None = None
     symmetric_transfers: bool | None = None
+    graph_method: str | None = None
+    anytime_default_headway_sec: int | None = None
     graph_cache_version: int | None = None
 
 

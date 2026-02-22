@@ -30,7 +30,8 @@ dependencies = [
 packages = [
     { include = "core", from = "src" },
     { include = "infra", from = "src" },
-    { include = "hamburg_twin", from = "src/use_cases" }
+    { include = "hamburg_twin", from = "src/use_cases" },
+    { include = "src", from = "backend" }
 ]
 
 

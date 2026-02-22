@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 
-import core.graph.build as build_module
-from core.graph.build import Edge, Graph
+import core.graph.graph_methods.multi_edge_graph as build_module
+from core.graph.graph_methods.multi_edge_graph import Edge, Graph
 from core.graph.walk import WalkEdgeSpec
 
 

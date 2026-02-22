@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import uvicorn
 
+from core.graph.caching import DEFAULT_GRAPH_METHOD, SUPPORTED_GRAPH_METHODS
 from core.server import RouteService, build_fastapi_app
 
 
@@ -60,6 +61,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Pickle path used for cold-start fallback (default: .cache/graph.pkl).",
     )
     parser.add_argument("--symmetric-transfers", action="store_true")
+    parser.add_argument(
+        "--graph-method",
+        choices=SUPPORTED_GRAPH_METHODS,
+        default=DEFAULT_GRAPH_METHOD,
+        help="Graph implementation used for routing (default: trip_stop).",
+    )
+    parser.add_argument(
+        "--anytime-default-headway-sec",
+        type=int,
+        default=None,
+        help="Fallback headway for trip_stop_anytime when route headway is unknown.",
+    )
     parser.add_argument("--graph-cache-version", type=int, default=6)
     parser.add_argument(
         "--rebuild-on-start",
@@ -70,6 +83,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-preload",
         action="store_true",
         help="Skip warm-loading graph at startup.",
+    )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print progress while (re)building graph data.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=5000,
+        help="How often to print progress counters (default: 5000).",
     )
     return parser
 

@@ -171,35 +171,49 @@ def td_dijkstra(
         for edge in graph.edges_from(node):
             new_time: int | None = None
             kind = edge.kind
-            weight_sec = edge.weight_sec
-            apply_penalty = edge.apply_penalty
+            is_trip_edge = kind in {"trip", "ride"}
+            weight_sec = getattr(edge, "weight_sec", None)
+            apply_penalty = getattr(edge, "apply_penalty", True)
             penalty = (
                 transfer_penalty_sec if kind == "transfer" and apply_penalty else 0
             )
             change_penalty = 0
+            edge_trip_id = getattr(edge, "trip_id", None)
+            edge_route_id = getattr(edge, "route_id", None)
+            trip_wait_sec = 0
             if (
-                kind == "trip"
+                is_trip_edge
                 and active_trip_id is not None
-                and edge.trip_id is not None
+                and edge_trip_id is not None
                 and (
-                    (state_by == "trip" and edge.trip_id != active_trip_id)
-                    or (state_by == "route" and edge.route_id != active_trip_id)
+                    (state_by == "trip" and edge_trip_id != active_trip_id)
+                    or (state_by == "route" and edge_route_id != active_trip_id)
                 )
             ):
                 change_penalty = route_change_penalty_sec
 
-            if kind == "trip":
-                dep_sec = edge.dep_time_sec
-                arr_sec = edge.arr_time_sec
+            if is_trip_edge:
+                dep_sec = getattr(edge, "dep_time_sec", None)
+                arr_sec = getattr(edge, "arr_time_sec", None)
                 if dep_sec is None or arr_sec is None:
-                    dep_sec = parse_time_to_seconds(edge.dep_time)
-                    arr_sec = parse_time_to_seconds(edge.arr_time)
+                    dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
+                    arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))
                 if dep_sec is not None and arr_sec is not None:
                     if dep_sec >= current_time and arr_sec >= dep_sec:
                         new_time = arr_sec + penalty + change_penalty
+                elif weight_sec is not None:
+                    headway_sec = getattr(edge, "headway_sec", None)
+                    if isinstance(headway_sec, int) and headway_sec > 0:
+                        trip_wait_sec = headway_sec // 2
             if new_time is None:
                 if weight_sec is not None:
-                    new_time = current_time + weight_sec + penalty + change_penalty
+                    new_time = (
+                        current_time
+                        + weight_sec
+                        + trip_wait_sec
+                        + penalty
+                        + change_penalty
+                    )
                 elif assume_zero_missing:
                     new_time = current_time + penalty + change_penalty
 
@@ -207,8 +221,8 @@ def td_dijkstra(
                 continue
 
             next_active = None
-            if kind == "trip":
-                next_active = edge.route_id if state_by == "route" else edge.trip_id
+            if is_trip_edge:
+                next_active = edge_route_id if state_by == "route" else edge_trip_id
             next_state = (edge.to_stop_id, next_active)
             if new_time < dist.get(next_state, math.inf):
                 dist[next_state] = new_time

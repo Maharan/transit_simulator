@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.graph.build import Graph, TripBucket, _add_walk_edges
+from core.graph.graph_methods.multi_edge_graph import Graph, TripBucket, _add_walk_edges
 from core.graph.lite import GraphLite
 from core.routing.td_dijkstra import td_dijkstra
 from core.routing.utils import parse_time_to_seconds

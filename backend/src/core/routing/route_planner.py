@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.graph.caching import InMemoryGraphCache, access_or_create_graph_cache
+from core.graph.caching import (
+    DEFAULT_GRAPH_METHOD,
+    InMemoryGraphCache,
+    access_or_create_graph_cache,
+)
 from core.graph.utils import resolve_parent_stop
 from core.gtfs.models import Stop
 from core.gtfs.utils import (
@@ -75,6 +79,8 @@ class RoutePlannerRequest:
     rebuild_graph_cache: bool = False
     symmetric_transfers: bool = False
     graph_cache_version: int = 6
+    graph_method: str = DEFAULT_GRAPH_METHOD
+    anytime_default_headway_sec: int | None = None
 
 
 @dataclass(frozen=True)
@@ -167,38 +173,52 @@ def find_best_route_and_itinerary(
         walk_max_distance_m=request.walk_max_distance_m,
         walk_speed_mps=request.walk_speed_mps,
         walk_max_neighbors=request.walk_max_neighbors,
+        graph_method=request.graph_method,
+        anytime_default_headway_sec=request.anytime_default_headway_sec,
+        progress=False,
         in_memory_cache=in_memory_graph_cache,
     )
 
     best_plan: RoutePlan | None = None
+    evaluated_transit_pairs = 0
     for from_candidate in from_candidates:
         transit_depart_time_sec = depart_time_sec + from_candidate.walk_time_sec
         transit_depart_time_str = seconds_to_time_str(transit_depart_time_sec)
         if transit_depart_time_str is None:
             continue
+        from_node_ids = _graph_node_ids_for_stop(graph, from_candidate.parent_id)
         for to_candidate in to_candidates:
-            result = td_dijkstra(
-                graph=graph,
-                start_id=from_candidate.parent_id,
-                goal_id=to_candidate.parent_id,
-                depart_time_str=transit_depart_time_str,
-                assume_zero_missing=request.assume_zero_missing,
-                transfer_penalty_sec=request.transfer_penalty_sec,
-                route_change_penalty_sec=request.route_change_penalty_sec,
-                time_horizon_sec=request.time_horizon_sec,
-                state_by=request.state_by,
-            )
-            if result.arrival_time_sec is None:
-                continue
-            arrival_time_sec = result.arrival_time_sec + to_candidate.walk_time_sec
-            if best_plan is None or arrival_time_sec < best_plan.arrival_time_sec:
-                best_plan = RoutePlan(
-                    from_candidate=from_candidate,
-                    to_candidate=to_candidate,
-                    transit_result=result,
-                    transit_depart_time_sec=transit_depart_time_sec,
-                    arrival_time_sec=arrival_time_sec,
-                )
+            to_node_ids = _graph_node_ids_for_stop(graph, to_candidate.parent_id)
+            for from_node_id in from_node_ids:
+                for to_node_id in to_node_ids:
+                    evaluated_transit_pairs += 1
+                    result = td_dijkstra(
+                        graph=graph,
+                        start_id=from_node_id,
+                        goal_id=to_node_id,
+                        depart_time_str=transit_depart_time_str,
+                        assume_zero_missing=request.assume_zero_missing,
+                        transfer_penalty_sec=request.transfer_penalty_sec,
+                        route_change_penalty_sec=request.route_change_penalty_sec,
+                        time_horizon_sec=request.time_horizon_sec,
+                        state_by=request.state_by,
+                    )
+                    if result.arrival_time_sec is None:
+                        continue
+                    arrival_time_sec = (
+                        result.arrival_time_sec + to_candidate.walk_time_sec
+                    )
+                    if (
+                        best_plan is None
+                        or arrival_time_sec < best_plan.arrival_time_sec
+                    ):
+                        best_plan = RoutePlan(
+                            from_candidate=from_candidate,
+                            to_candidate=to_candidate,
+                            transit_result=result,
+                            transit_depart_time_sec=transit_depart_time_sec,
+                            arrival_time_sec=arrival_time_sec,
+                        )
 
     if best_plan is None:
         raise SystemExit("No path found for the provided endpoints.")
@@ -209,11 +229,19 @@ def find_best_route_and_itinerary(
         to_mode=to_mode,
     )
 
-    stop_names, route_short_names = create_itinerary_data(
-        session=session,
-        feed_id=feed_id,
+    display_stop_ids = _display_stop_ids_for_path(
+        graph=graph,
         stop_ids=itinerary_result.stop_path,
     )
+    stop_names_raw, route_short_names = create_itinerary_data(
+        session=session,
+        feed_id=feed_id,
+        stop_ids=sorted(set(display_stop_ids.values())),
+    )
+    stop_names = {
+        stop_id: stop_names_raw.get(display_stop_id, display_stop_id)
+        for stop_id, display_stop_id in display_stop_ids.items()
+    }
 
     from_stop_label = best_plan.from_candidate.parent_name
     to_stop_label = best_plan.to_candidate.parent_name
@@ -240,6 +268,10 @@ def find_best_route_and_itinerary(
         context_lines.append(
             "Evaluated coordinate candidates: "
             f"{len(from_candidates)} from x {len(to_candidates)} to = {evaluated_pairs} pair(s)."
+        )
+    if evaluated_transit_pairs:
+        context_lines.append(
+            f"Evaluated transit graph pair(s): {evaluated_transit_pairs}."
         )
     if from_mode == "coords":
         context_lines.append(
@@ -453,3 +485,30 @@ def _format_coord_label(lat: float | None, lon: float | None) -> str:
     if lat is None or lon is None:
         return "Coordinate"
     return f"Coordinate ({lat:.6f}, {lon:.6f})"
+
+
+def _graph_node_ids_for_stop(graph, stop_id: str) -> list[str]:
+    if hasattr(graph, "route_stop_ids_for_stop"):
+        route_stop_ids = graph.route_stop_ids_for_stop(stop_id)
+        if route_stop_ids:
+            return sorted(route_stop_ids)
+    return [stop_id]
+
+
+def _display_stop_ids_for_path(*, graph, stop_ids: list[str]) -> dict[str, str]:
+    display_stop_ids: dict[str, str] = {}
+    graph_nodes = getattr(graph, "nodes", None)
+    for stop_id in stop_ids:
+        if stop_id in {COORD_ORIGIN_STOP_ID, COORD_DEST_STOP_ID}:
+            continue
+        display_stop_id = stop_id
+        if isinstance(graph_nodes, dict):
+            node_data = graph_nodes.get(stop_id)
+            if isinstance(node_data, dict):
+                node_stop_id = node_data.get("stop_id")
+                if isinstance(node_stop_id, str) and node_stop_id:
+                    display_stop_id = node_stop_id
+        if display_stop_id == stop_id and "::" in stop_id:
+            display_stop_id = stop_id.split("::", 1)[0]
+        display_stop_ids[stop_id] = display_stop_id
+    return display_stop_ids

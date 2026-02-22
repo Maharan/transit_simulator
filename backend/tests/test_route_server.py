@@ -41,6 +41,7 @@ def test_request_from_payload_uses_server_defaults(monkeypatch) -> None:
     assert request.depart_time == args.depart_time
     assert request.transfer_penalty_sec == 0
     assert request.route_change_penalty_sec == 300
+    assert request.graph_method == "trip_stop"
 
 
 def test_route_uses_in_memory_graph_cache(monkeypatch) -> None:
@@ -363,3 +364,6 @@ def test_server_parser_defaults_for_routing_preferences() -> None:
     assert args.graph_cache == ".cache/graph.pkl"
     assert args.transfer_penalty == 0
     assert args.route_change_penalty == 300
+    assert args.graph_method == "trip_stop"
+    assert args.progress is False
+    assert args.progress_every == 5000

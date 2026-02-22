@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from core.graph.synthetic_edge import SyntheticEdge
+from core.graph.graph_methods.synthetic_edge import SyntheticEdge
 
 
 def test_from_edge_copies_fields_and_defaults() -> None:
