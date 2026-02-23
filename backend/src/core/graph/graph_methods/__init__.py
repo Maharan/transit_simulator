@@ -23,6 +23,7 @@ from .trip_stop_graph import (
     TripStopEdge,
     TripStopGraph,
     build_trip_stop_graph_from_gtfs,
+    make_same_stop_transfer_hub_node_id,
     make_trip_stop_node_id,
     split_trip_stop_node_id,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "TripStopEdge",
     "TripStopGraph",
     "build_trip_stop_graph_from_gtfs",
+    "make_same_stop_transfer_hub_node_id",
     "make_trip_stop_node_id",
     "split_trip_stop_node_id",
 ]

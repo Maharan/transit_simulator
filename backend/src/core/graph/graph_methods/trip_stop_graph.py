@@ -19,10 +19,15 @@ from core.routing.utils import seconds_to_time_str
 
 TRIP_STOP_NODE_SEPARATOR = "::"
 DEFAULT_SAME_STOP_TRANSFER_SEC = 0
+SAME_STOP_TRANSFER_HUB_PREFIX = "__same_stop_transfer__"
 
 
 def make_trip_stop_node_id(stop_id: str, trip_id: str) -> str:
     return f"{stop_id}{TRIP_STOP_NODE_SEPARATOR}{trip_id}"
+
+
+def make_same_stop_transfer_hub_node_id(stop_id: str) -> str:
+    return f"{SAME_STOP_TRANSFER_HUB_PREFIX}{stop_id}"
 
 
 def split_trip_stop_node_id(node_id: str) -> tuple[str, str]:
@@ -70,17 +75,19 @@ class TripStopGraph(BaseGraph):
         self.nodes: dict[str, dict[str, str | float | None]] = {}
         self.adjacency: dict[str, dict[str, TripStopEdge]] = defaultdict(dict)
         self.stop_to_route_stop_ids: dict[str, set[str]] = defaultdict(set)
+        self.same_stop_transfer_hub_ids: dict[str, str] = {}
 
     def add_node(
         self,
         route_stop_id: str,
         *,
         stop_id: str,
-        trip_id: str,
+        trip_id: str | None,
         route_id: str | None,
         service_id: str | None,
         stop_lat: float | None,
         stop_lon: float | None,
+        include_in_stop_index: bool = True,
     ) -> None:
         self.nodes[route_stop_id] = {
             "stop_id": stop_id,
@@ -90,7 +97,8 @@ class TripStopGraph(BaseGraph):
             "stop_lat": stop_lat,
             "stop_lon": stop_lon,
         }
-        self.stop_to_route_stop_ids[stop_id].add(route_stop_id)
+        if include_in_stop_index:
+            self.stop_to_route_stop_ids[stop_id].add(route_stop_id)
 
     def add_edge(self, from_route_stop_id: str, edge: TripStopEdge) -> None:
         outgoing = self.adjacency[from_route_stop_id]
@@ -105,6 +113,30 @@ class TripStopGraph(BaseGraph):
 
     def route_stop_ids_for_stop(self, stop_id: str) -> set[str]:
         return set(self.stop_to_route_stop_ids.get(stop_id, set()))
+
+    def ensure_same_stop_transfer_hub(
+        self,
+        *,
+        stop_id: str,
+        stop_lat: float | None,
+        stop_lon: float | None,
+    ) -> str:
+        existing = self.same_stop_transfer_hub_ids.get(stop_id)
+        if existing is not None:
+            return existing
+        hub_node_id = make_same_stop_transfer_hub_node_id(stop_id)
+        self.same_stop_transfer_hub_ids[stop_id] = hub_node_id
+        self.add_node(
+            hub_node_id,
+            stop_id=stop_id,
+            trip_id=None,
+            route_id=None,
+            service_id=None,
+            stop_lat=stop_lat,
+            stop_lon=stop_lon,
+            include_in_stop_index=False,
+        )
+        return hub_node_id
 
 
 def _preferred_edge(existing: TripStopEdge, candidate: TripStopEdge) -> TripStopEdge:
@@ -268,31 +300,64 @@ def build_trip_stop_graph_from_gtfs(
         print(f"Scanned {stop_time_count} stop_times rows for trip-stop graph total.")
         print(f"Built {ride_edge_count} ride edges.")
 
+    hub_exit_initialized_for_stop: set[str] = set()
+
+    def _ensure_same_stop_transfer_hub_exit_edges(stop_id: str) -> str | None:
+        route_stop_ids = graph.route_stop_ids_for_stop(stop_id)
+        if not route_stop_ids:
+            return None
+        stop_lat, stop_lon = parent_stop_coords.get(stop_id, (None, None))
+        same_stop_transfer_hub_node = graph.ensure_same_stop_transfer_hub(
+            stop_id=stop_id,
+            stop_lat=cast(float | None, stop_lat),
+            stop_lon=cast(float | None, stop_lon),
+        )
+        if stop_id in hub_exit_initialized_for_stop:
+            return same_stop_transfer_hub_node
+        for route_stop_id in sorted(route_stop_ids):
+            graph.add_edge(
+                same_stop_transfer_hub_node,
+                TripStopEdge(
+                    to_route_stop_id=route_stop_id,
+                    weight_sec=0,
+                    kind="transfer",
+                    transfer_type=2,
+                    apply_penalty=False,
+                    label="station_link",
+                ),
+            )
+        hub_exit_initialized_for_stop.add(stop_id)
+        return same_stop_transfer_hub_node
+
     same_stop_transfer_count = 0
     if connect_same_stop_transfers:
-        for route_stop_ids in graph.stop_to_route_stop_ids.values():
+        for stop_id, route_stop_ids in graph.stop_to_route_stop_ids.items():
             if len(route_stop_ids) < 2:
                 continue
             route_stop_id_list = sorted(route_stop_ids)
-            for from_node in route_stop_id_list:
-                for to_node in route_stop_id_list:
-                    if from_node == to_node:
-                        continue
-                    graph.add_edge(
-                        from_node,
-                        TripStopEdge(
-                            to_route_stop_id=to_node,
-                            weight_sec=same_stop_transfer_sec,
-                            kind="transfer",
-                            transfer_type=2,
-                        ),
+            same_stop_transfer_hub_node = _ensure_same_stop_transfer_hub_exit_edges(
+                stop_id
+            )
+            if same_stop_transfer_hub_node is None:
+                continue
+            same_stop_transfer_count += len(route_stop_id_list)
+            for route_stop_id in route_stop_id_list:
+                graph.add_edge(
+                    route_stop_id,
+                    TripStopEdge(
+                        to_route_stop_id=same_stop_transfer_hub_node,
+                        weight_sec=same_stop_transfer_sec,
+                        kind="transfer",
+                        transfer_type=2,
+                        label="station_link",
+                    ),
+                )
+                same_stop_transfer_count += 1
+                if progress and same_stop_transfer_count % progress_every == 0:
+                    print(
+                        "Added "
+                        f"{same_stop_transfer_count} same-stop transfer edges so far..."
                     )
-                    same_stop_transfer_count += 1
-                    if progress and same_stop_transfer_count % progress_every == 0:
-                        print(
-                            "Added "
-                            f"{same_stop_transfer_count} same-stop transfer edges so far..."
-                        )
         if progress:
             print(
                 "Added "
@@ -326,14 +391,37 @@ def build_trip_stop_graph_from_gtfs(
         if from_stop == to_stop:
             continue
         explicit_stop_pairs.add((from_stop, to_stop))
-        from_nodes = graph.route_stop_ids_for_stop(from_stop)
-        to_nodes = graph.route_stop_ids_for_stop(to_stop)
+        from_nodes = sorted(graph.route_stop_ids_for_stop(from_stop))
+        to_nodes = sorted(graph.route_stop_ids_for_stop(to_stop))
+        to_hub_node = _ensure_same_stop_transfer_hub_exit_edges(to_stop)
+        if to_hub_node is None:
+            continue
         for from_node in from_nodes:
+            graph.add_edge(
+                from_node,
+                TripStopEdge(
+                    to_route_stop_id=to_hub_node,
+                    weight_sec=min_transfer_time,
+                    kind="transfer",
+                    transfer_type=transfer_type,
+                ),
+            )
+            explicit_transfer_count += 1
+            if progress and explicit_transfer_count % progress_every == 0:
+                print(
+                    "Added "
+                    f"{explicit_transfer_count} inter-stop transfer edges so far..."
+                )
+        if symmetric_transfers:
+            explicit_stop_pairs.add((to_stop, from_stop))
+            from_hub_node = _ensure_same_stop_transfer_hub_exit_edges(from_stop)
+            if from_hub_node is None:
+                continue
             for to_node in to_nodes:
                 graph.add_edge(
-                    from_node,
+                    to_node,
                     TripStopEdge(
-                        to_route_stop_id=to_node,
+                        to_route_stop_id=from_hub_node,
                         weight_sec=min_transfer_time,
                         kind="transfer",
                         transfer_type=transfer_type,
@@ -345,25 +433,6 @@ def build_trip_stop_graph_from_gtfs(
                         "Added "
                         f"{explicit_transfer_count} inter-stop transfer edges so far..."
                     )
-        if symmetric_transfers:
-            explicit_stop_pairs.add((to_stop, from_stop))
-            for to_node in to_nodes:
-                for from_node in from_nodes:
-                    graph.add_edge(
-                        to_node,
-                        TripStopEdge(
-                            to_route_stop_id=from_node,
-                            weight_sec=min_transfer_time,
-                            kind="transfer",
-                            transfer_type=transfer_type,
-                        ),
-                    )
-                    explicit_transfer_count += 1
-                    if progress and explicit_transfer_count % progress_every == 0:
-                        print(
-                            "Added "
-                            f"{explicit_transfer_count} inter-stop transfer edges so far..."
-                        )
     if progress:
         print(
             "Added "
@@ -387,26 +456,27 @@ def build_trip_stop_graph_from_gtfs(
             )
         walk_edge_count = 0
         for spec in walk_specs:
-            from_nodes = graph.route_stop_ids_for_stop(spec.from_stop_id)
-            to_nodes = graph.route_stop_ids_for_stop(spec.to_stop_id)
+            from_nodes = sorted(graph.route_stop_ids_for_stop(spec.from_stop_id))
+            to_hub_node = _ensure_same_stop_transfer_hub_exit_edges(spec.to_stop_id)
+            if to_hub_node is None:
+                continue
             for from_node in from_nodes:
-                for to_node in to_nodes:
-                    graph.add_edge(
-                        from_node,
-                        TripStopEdge(
-                            to_route_stop_id=to_node,
-                            weight_sec=spec.duration_sec,
-                            kind="transfer",
-                            transfer_type=None,
-                            apply_penalty=False,
-                            label=WALK_EDGE_LABEL,
-                        ),
+                graph.add_edge(
+                    from_node,
+                    TripStopEdge(
+                        to_route_stop_id=to_hub_node,
+                        weight_sec=spec.duration_sec,
+                        kind="transfer",
+                        transfer_type=None,
+                        apply_penalty=False,
+                        label=WALK_EDGE_LABEL,
+                    ),
+                )
+                walk_edge_count += 1
+                if progress and walk_edge_count % progress_every == 0:
+                    print(
+                        f"Added {walk_edge_count}/{len(walk_specs)} walking edges so far in trip-stop graph..."
                     )
-                    walk_edge_count += 1
-                    if progress and walk_edge_count % progress_every == 0:
-                        print(
-                            f"Added {walk_edge_count} walking edges so far in trip-stop graph..."
-                        )
         if progress:
             print(f"Added {walk_edge_count} walking edges in trip-stop graph.")
 

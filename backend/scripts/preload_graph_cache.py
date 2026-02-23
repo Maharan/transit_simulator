@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.core.server.route_service import RouteService
+from core.server.route_service import RouteService
 from scripts import route_server
 
 

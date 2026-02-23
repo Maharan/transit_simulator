@@ -19,6 +19,7 @@ from .graph_methods import (
     build_graph_from_gtfs,
     build_trip_stop_anytime_graph_from_gtfs,
     build_trip_stop_graph_from_gtfs,
+    make_same_stop_transfer_hub_node_id,
     make_trip_stop_node_id,
     split_trip_stop_node_id,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "TripStopEdge",
     "TRIP_STOP_NODE_SEPARATOR",
     "DEFAULT_SAME_STOP_TRANSFER_SEC",
+    "make_same_stop_transfer_hub_node_id",
     "make_trip_stop_node_id",
     "split_trip_stop_node_id",
     "build_trip_stop_graph_from_gtfs",
