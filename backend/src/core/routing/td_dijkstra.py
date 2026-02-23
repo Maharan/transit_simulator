@@ -9,6 +9,8 @@ from bisect import bisect_left
 from core.routing.types import GraphLike
 from core.routing.utils import parse_time_to_seconds, seconds_to_time_str
 
+RIDE_EDGE_KINDS = {"trip", "ride"}
+
 
 @dataclass(frozen=True)
 class PathResult:
@@ -33,6 +35,105 @@ class ChosenEdge:
     label: str | None = None
 
 
+def _edge_schedule_seconds(edge) -> tuple[int | None, int | None]:
+    dep_sec = getattr(edge, "dep_time_sec", None)
+    arr_sec = getattr(edge, "arr_time_sec", None)
+    if dep_sec is None or arr_sec is None:
+        dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
+        arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))
+    return dep_sec, arr_sec
+
+
+def _ride_departure_cursor(
+    *,
+    edge,
+    current_time: int,
+    assume_zero_missing: bool,
+    max_wait_sec: int | None,
+) -> int | None:
+    dep_sec, arr_sec = _edge_schedule_seconds(edge)
+    has_explicit_schedule = dep_sec is not None and arr_sec is not None
+    if has_explicit_schedule:
+        wait_sec = dep_sec - current_time
+        if wait_sec < 0 or arr_sec < dep_sec:
+            return None
+        if max_wait_sec is not None and wait_sec > max_wait_sec:
+            return None
+        return dep_sec
+
+    weight_sec = getattr(edge, "weight_sec", None)
+    if weight_sec is not None:
+        headway_sec = getattr(edge, "headway_sec", None)
+        estimated_wait = (
+            headway_sec // 2 if isinstance(headway_sec, int) and headway_sec > 0 else 0
+        )
+        if max_wait_sec is not None and estimated_wait > max_wait_sec:
+            return None
+        return current_time + estimated_wait
+
+    if assume_zero_missing:
+        return current_time
+    return None
+
+
+def _state_group_key_for_ride_edge(*, edge, state_by: str):
+    if state_by == "route":
+        key = getattr(edge, "route_id", None)
+        if key is not None:
+            return ("route", key)
+        fallback = getattr(edge, "trip_id", None)
+        if fallback is not None:
+            return ("trip", fallback)
+        return None
+
+    key = getattr(edge, "trip_id", None)
+    if key is not None:
+        return ("trip", key)
+    fallback = getattr(edge, "route_id", None)
+    if fallback is not None:
+        return ("route", fallback)
+    return None
+
+
+def _prune_ride_edges_to_first_departure(
+    *,
+    edges: list,
+    current_time: int,
+    state_by: str,
+    assume_zero_missing: bool,
+    max_wait_sec: int | None,
+) -> list:
+    non_ride_edges: list = []
+    best_ride_by_group: dict[tuple[str, object], tuple[int, object]] = {}
+    ride_without_group: list = []
+
+    for edge in edges:
+        if getattr(edge, "kind", None) not in RIDE_EDGE_KINDS:
+            non_ride_edges.append(edge)
+            continue
+
+        departure_cursor = _ride_departure_cursor(
+            edge=edge,
+            current_time=current_time,
+            assume_zero_missing=assume_zero_missing,
+            max_wait_sec=max_wait_sec,
+        )
+        if departure_cursor is None:
+            continue
+
+        group_key = _state_group_key_for_ride_edge(edge=edge, state_by=state_by)
+        if group_key is None:
+            ride_without_group.append(edge)
+            continue
+
+        existing = best_ride_by_group.get(group_key)
+        if existing is None or departure_cursor < existing[0]:
+            best_ride_by_group[group_key] = (departure_cursor, edge)
+
+    selected_grouped_ride_edges = [entry[1] for entry in best_ride_by_group.values()]
+    return non_ride_edges + ride_without_group + selected_grouped_ride_edges
+
+
 def td_dijkstra(
     graph: GraphLike,
     start_id: str,
@@ -42,7 +143,10 @@ def td_dijkstra(
     transfer_penalty_sec: int = 300,
     route_change_penalty_sec: int | None = None,
     time_horizon_sec: int | None = 4 * 3600,
+    max_wait_sec: int | None = None,
     state_by: str = "route",
+    debug_progress: bool = False,
+    debug_progress_every: int = 50000,
 ) -> PathResult:
     def _normalize_id(value):
         if value is None:
@@ -68,6 +172,10 @@ def td_dijkstra(
         route_change_penalty_sec = transfer_penalty_sec
     if state_by not in {"route", "trip"}:
         raise ValueError("state_by must be 'route' or 'trip'.")
+    if max_wait_sec is not None and max_wait_sec <= 0:
+        raise ValueError("max_wait_sec must be > 0 when provided.")
+    if debug_progress_every <= 0:
+        raise ValueError("debug_progress_every must be > 0.")
     horizon_end = (
         depart_time_sec + time_horizon_sec if time_horizon_sec is not None else None
     )
@@ -80,12 +188,29 @@ def td_dijkstra(
     dist: dict[tuple[str, str | None], int] = {start_state: depart_time_sec}
     prev: dict[tuple[str, str | None], tuple[tuple[str, str | None], object]] = {}
     goal_state: tuple[str, str | None] | None = None
+    expanded_states = 0
+    relaxed_edges = 0
+
+    if debug_progress:
+        print(
+            "Dijkstra progress: "
+            f"searching {start_id} -> {goal_id} from {depart_time_str}."
+        )
 
     while heap:
         current_time, _order, node, active_trip_id = heapq.heappop(heap)
         state = (node, active_trip_id)
         if current_time != dist.get(state, 0):
             continue
+        expanded_states += 1
+        if debug_progress and expanded_states % debug_progress_every == 0:
+            current_time_label = seconds_to_time_str(current_time) or str(current_time)
+            print(
+                "Dijkstra progress: "
+                f"expanded {expanded_states} state(s), "
+                f"relaxed {relaxed_edges} edge(s), "
+                f"frontier={len(heap)}, current={node}@{current_time_label}."
+            )
         if node == goal_id:
             goal_state = state
             break
@@ -93,9 +218,13 @@ def td_dijkstra(
         if horizon_end is not None and current_time > horizon_end:
             continue
 
-        use_buckets = hasattr(graph, "trip_buckets_from") and hasattr(
-            graph, "transfer_edges_from"
-        )
+        use_buckets_override = getattr(graph, "_use_bucket_mode", None)
+        if isinstance(use_buckets_override, bool):
+            use_buckets = use_buckets_override
+        else:
+            use_buckets = hasattr(graph, "trip_buckets_from") and hasattr(
+                graph, "transfer_edges_from"
+            )
         if use_buckets:
             for edge in graph.transfer_edges_from(node):
                 new_time: int | None = None
@@ -115,6 +244,7 @@ def td_dijkstra(
                 if new_time < dist.get(next_state, math.inf):
                     dist[next_state] = new_time
                     prev[next_state] = (state, edge)
+                    relaxed_edges += 1
                     heapq.heappush(
                         heap, (new_time, next(counter), edge.to_stop_id, None)
                     )
@@ -129,6 +259,8 @@ def td_dijkstra(
                     continue
                 dep_sec = bucket.dep_secs[idx]
                 if horizon_end is not None and dep_sec > horizon_end:
+                    continue
+                if max_wait_sec is not None and dep_sec - current_time > max_wait_sec:
                     continue
                 arr_sec = bucket.arr_secs[idx]
                 raw_trip_id = bucket.trip_ids[idx]
@@ -162,16 +294,25 @@ def td_dijkstra(
                 if new_time < dist.get(next_state, math.inf):
                     dist[next_state] = new_time
                     prev[next_state] = (state, chosen_edge)
+                    relaxed_edges += 1
                     heapq.heappush(
                         heap,
                         (new_time, next(counter), bucket.to_stop_id, next_active),
                     )
             continue
 
-        for edge in graph.edges_from(node):
+        pruned_edges = _prune_ride_edges_to_first_departure(
+            edges=list(graph.edges_from(node)),
+            current_time=current_time,
+            state_by=state_by,
+            assume_zero_missing=assume_zero_missing,
+            max_wait_sec=max_wait_sec,
+        )
+
+        for edge in pruned_edges:
             new_time: int | None = None
             kind = edge.kind
-            is_trip_edge = kind in {"trip", "ride"}
+            is_trip_edge = kind in RIDE_EDGE_KINDS
             weight_sec = getattr(edge, "weight_sec", None)
             apply_penalty = getattr(edge, "apply_penalty", True)
             penalty = (
@@ -193,19 +334,35 @@ def td_dijkstra(
                 change_penalty = route_change_penalty_sec
 
             if is_trip_edge:
-                dep_sec = getattr(edge, "dep_time_sec", None)
-                arr_sec = getattr(edge, "arr_time_sec", None)
-                if dep_sec is None or arr_sec is None:
-                    dep_sec = parse_time_to_seconds(getattr(edge, "dep_time", None))
-                    arr_sec = parse_time_to_seconds(getattr(edge, "arr_time", None))
-                if dep_sec is not None and arr_sec is not None:
-                    if dep_sec >= current_time and arr_sec >= dep_sec:
-                        new_time = arr_sec + penalty + change_penalty
-                elif weight_sec is not None:
-                    headway_sec = getattr(edge, "headway_sec", None)
-                    if isinstance(headway_sec, int) and headway_sec > 0:
-                        trip_wait_sec = headway_sec // 2
-            if new_time is None:
+                dep_sec, arr_sec = _edge_schedule_seconds(edge)
+                has_explicit_schedule = dep_sec is not None and arr_sec is not None
+                if has_explicit_schedule:
+                    wait_sec = dep_sec - current_time
+                    if wait_sec < 0 or arr_sec < dep_sec:
+                        continue
+                    if max_wait_sec is not None and wait_sec > max_wait_sec:
+                        continue
+                    new_time = arr_sec + penalty + change_penalty
+                else:
+                    if weight_sec is not None:
+                        headway_sec = getattr(edge, "headway_sec", None)
+                        if isinstance(headway_sec, int) and headway_sec > 0:
+                            trip_wait_sec = headway_sec // 2
+                            if (
+                                max_wait_sec is not None
+                                and trip_wait_sec > max_wait_sec
+                            ):
+                                continue
+                        new_time = (
+                            current_time
+                            + weight_sec
+                            + trip_wait_sec
+                            + penalty
+                            + change_penalty
+                        )
+                    elif assume_zero_missing:
+                        new_time = current_time + penalty + change_penalty
+            else:
                 if weight_sec is not None:
                     new_time = (
                         current_time
@@ -227,12 +384,18 @@ def td_dijkstra(
             if new_time < dist.get(next_state, math.inf):
                 dist[next_state] = new_time
                 prev[next_state] = (state, edge)
+                relaxed_edges += 1
                 heapq.heappush(
                     heap,
                     (new_time, next(counter), edge.to_stop_id, next_active),
                 )
 
     if goal_state is None:
+        if debug_progress:
+            print(
+                "Dijkstra progress: "
+                f"no path after expanding {expanded_states} state(s)."
+            )
         return PathResult(arrival_time_sec=None, stop_path=[], edge_path=[])
 
     edges: list = []
@@ -248,6 +411,12 @@ def td_dijkstra(
 
     stops.reverse()
     edges.reverse()
+    if debug_progress:
+        arrival_label = seconds_to_time_str(dist[goal_state]) or str(dist[goal_state])
+        print(
+            "Dijkstra progress: "
+            f"done after expanding {expanded_states} state(s); arrival {arrival_label}."
+        )
     return PathResult(
         arrival_time_sec=dist[goal_state],
         stop_path=stops,

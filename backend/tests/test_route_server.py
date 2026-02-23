@@ -41,6 +41,7 @@ def test_request_from_payload_uses_server_defaults(monkeypatch) -> None:
     assert request.depart_time == args.depart_time
     assert request.transfer_penalty_sec == 0
     assert request.route_change_penalty_sec == 300
+    assert request.max_wait_sec == 1200
     assert request.graph_method == "trip_stop"
 
 

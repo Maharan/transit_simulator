@@ -104,6 +104,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "(default: transfer penalty).",
     )
     parser.add_argument(
+        "--max-wait-sec",
+        type=int,
+        default=1200,
+        help="Maximum waiting time allowed before boarding a ride/trip edge (default: 1200).",
+    )
+    parser.add_argument(
         "--state-by",
         choices=["route", "trip"],
         default="route",
@@ -174,6 +180,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print coordinate candidate pair evaluation summary lines.",
     )
     parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print live progress while loading/building graph and evaluating routes.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=5000,
+        help="How often to print live progress counters (default: 5000).",
+    )
+    parser.add_argument(
         "--rebuild-graph-cache",
         action="store_true",
         help="Rebuild and overwrite the pickle graph cache if --graph-cache is set.",
@@ -228,6 +245,7 @@ def main() -> None:
                 depart_time=args.depart_time,
                 transfer_penalty_sec=args.transfer_penalty,
                 route_change_penalty_sec=args.route_change_penalty,
+                max_wait_sec=args.max_wait_sec,
                 state_by=args.state_by,
                 time_horizon_sec=args.time_horizon_sec,
                 disable_walking=args.disable_walking,
@@ -239,6 +257,8 @@ def main() -> None:
                 symmetric_transfers=args.symmetric_transfers,
                 graph_method=args.graph_method,
                 anytime_default_headway_sec=args.anytime_default_headway_sec,
+                debug_progress=args.progress,
+                debug_progress_every=args.progress_every,
             ),
         )
         output_lines = build_output_lines(

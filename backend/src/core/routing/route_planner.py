@@ -30,6 +30,94 @@ if TYPE_CHECKING:
 
 COORD_ORIGIN_STOP_ID = "__coord_origin__"
 COORD_DEST_STOP_ID = "__coord_destination__"
+QUERY_SOURCE_NODE_PREFIX = "__query_source__"
+QUERY_SINK_NODE_PREFIX = "__query_sink__"
+
+
+@dataclass(frozen=True)
+class _QuerySinkEdge:
+    to_stop_id: str
+    weight_sec: int | None = 0
+    kind: str = "transfer"
+    trip_id: str | None = None
+    route_id: str | None = None
+    dep_time: str | None = None
+    arr_time: str | None = None
+    dep_time_sec: int | None = None
+    arr_time_sec: int | None = None
+    transfer_type: int | None = None
+    apply_penalty: bool = False
+    label: str | None = "query_sink"
+
+
+class _QueryAugmentedGraph:
+    def __init__(
+        self,
+        *,
+        base_graph,
+        source_node_id: str,
+        source_edge_weights: dict[str, int],
+        sink_node_id: str,
+        sink_edge_weights: dict[str, int],
+    ) -> None:
+        self._base_graph = base_graph
+        self._source_node_id = source_node_id
+        self._sink_node_id = sink_node_id
+        self._source_edges = [
+            _QuerySinkEdge(
+                to_stop_id=node_id,
+                weight_sec=weight_sec,
+                label="query_source",
+            )
+            for node_id, weight_sec in sorted(source_edge_weights.items())
+        ]
+        self._sink_edges_by_from_node = {
+            node_id: _QuerySinkEdge(
+                to_stop_id=self._sink_node_id,
+                weight_sec=weight_sec,
+                label="query_sink",
+            )
+            for node_id, weight_sec in sink_edge_weights.items()
+        }
+        self._use_bucket_mode = hasattr(base_graph, "trip_buckets_from") and hasattr(
+            base_graph, "transfer_edges_from"
+        )
+
+    def edges_from(self, stop_id: str):
+        if stop_id == self._source_node_id:
+            return self._source_edges
+        if stop_id == self._sink_node_id:
+            return []
+        base_edges = list(self._base_graph.edges_from(stop_id))
+        query_sink_edge = self._sink_edges_by_from_node.get(stop_id)
+        if query_sink_edge is not None:
+            base_edges.append(query_sink_edge)
+        return base_edges
+
+    def transfer_edges_from(self, stop_id: str):
+        if stop_id == self._source_node_id:
+            return self._source_edges
+        if stop_id == self._sink_node_id:
+            return []
+        if not hasattr(self._base_graph, "transfer_edges_from"):
+            return []
+        base_edges = list(self._base_graph.transfer_edges_from(stop_id))
+        query_sink_edge = self._sink_edges_by_from_node.get(stop_id)
+        if query_sink_edge is not None:
+            base_edges.append(query_sink_edge)
+        return base_edges
+
+    def trip_buckets_from(self, stop_id: str):
+        if stop_id == self._source_node_id:
+            return []
+        if stop_id == self._sink_node_id:
+            return []
+        if not hasattr(self._base_graph, "trip_buckets_from"):
+            return []
+        return self._base_graph.trip_buckets_from(stop_id)
+
+    def __getattr__(self, name: str):
+        return getattr(self._base_graph, name)
 
 
 @dataclass(frozen=True)
@@ -69,6 +157,7 @@ class RoutePlannerRequest:
     depart_time: str = "09:00:00"
     transfer_penalty_sec: int = 300
     route_change_penalty_sec: int | None = None
+    max_wait_sec: int | None = 1200
     state_by: str = "route"
     time_horizon_sec: int = 4 * 3600
     disable_walking: bool = False
@@ -81,6 +170,8 @@ class RoutePlannerRequest:
     graph_cache_version: int = 6
     graph_method: str = DEFAULT_GRAPH_METHOD
     anytime_default_headway_sec: int | None = None
+    debug_progress: bool = False
+    debug_progress_every: int = 5000
 
 
 @dataclass(frozen=True)
@@ -122,6 +213,10 @@ def find_best_route_and_itinerary(
         raise SystemExit("--coord-max-candidates must be > 0.")
     if request.coord_max_distance_m <= 0:
         raise SystemExit("--coord-max-distance-m must be > 0.")
+    if request.max_wait_sec is not None and request.max_wait_sec <= 0:
+        raise SystemExit("--max-wait-sec must be > 0 when provided.")
+    if request.debug_progress_every <= 0:
+        raise SystemExit("--progress-every must be > 0.")
     if not request.disable_walking:
         if request.walk_max_distance_m <= 0:
             raise SystemExit("--walk-max-distance-m must be > 0.")
@@ -175,50 +270,113 @@ def find_best_route_and_itinerary(
         walk_max_neighbors=request.walk_max_neighbors,
         graph_method=request.graph_method,
         anytime_default_headway_sec=request.anytime_default_headway_sec,
-        progress=False,
+        progress=request.debug_progress,
+        progress_every=request.debug_progress_every,
         in_memory_cache=in_memory_graph_cache,
     )
 
     best_plan: RoutePlan | None = None
-    evaluated_transit_pairs = 0
-    for from_candidate in from_candidates:
-        transit_depart_time_sec = depart_time_sec + from_candidate.walk_time_sec
-        transit_depart_time_str = seconds_to_time_str(transit_depart_time_sec)
-        if transit_depart_time_str is None:
-            continue
-        from_node_ids = _graph_node_ids_for_stop(graph, from_candidate.parent_id)
-        for to_candidate in to_candidates:
-            to_node_ids = _graph_node_ids_for_stop(graph, to_candidate.parent_id)
-            for from_node_id in from_node_ids:
-                for to_node_id in to_node_ids:
-                    evaluated_transit_pairs += 1
-                    result = td_dijkstra(
-                        graph=graph,
-                        start_id=from_node_id,
-                        goal_id=to_node_id,
-                        depart_time_str=transit_depart_time_str,
-                        assume_zero_missing=request.assume_zero_missing,
-                        transfer_penalty_sec=request.transfer_penalty_sec,
-                        route_change_penalty_sec=request.route_change_penalty_sec,
-                        time_horizon_sec=request.time_horizon_sec,
-                        state_by=request.state_by,
-                    )
-                    if result.arrival_time_sec is None:
-                        continue
-                    arrival_time_sec = (
-                        result.arrival_time_sec + to_candidate.walk_time_sec
-                    )
-                    if (
-                        best_plan is None
-                        or arrival_time_sec < best_plan.arrival_time_sec
-                    ):
-                        best_plan = RoutePlan(
-                            from_candidate=from_candidate,
-                            to_candidate=to_candidate,
-                            transit_result=result,
-                            transit_depart_time_sec=transit_depart_time_sec,
-                            arrival_time_sec=arrival_time_sec,
-                        )
+    evaluated_transit_searches = 0
+    if request.debug_progress:
+        print("Routing progress: evaluating transit graph searches...")
+
+    source_edge_weights, from_candidate_by_node_id = _query_edge_weights_and_candidates(
+        graph=graph,
+        candidates=from_candidates,
+    )
+    sink_edge_weights, to_candidate_by_node_id = _query_edge_weights_and_candidates(
+        graph=graph,
+        candidates=to_candidates,
+    )
+    if source_edge_weights and sink_edge_weights:
+        query_source_node_id = _make_query_source_node_id("all")
+        query_sink_node_id = _make_query_sink_node_id("all")
+        sink_graph = _QueryAugmentedGraph(
+            base_graph=graph,
+            source_node_id=query_source_node_id,
+            source_edge_weights=source_edge_weights,
+            sink_node_id=query_sink_node_id,
+            sink_edge_weights=sink_edge_weights,
+        )
+        evaluated_transit_searches = 1
+        if (
+            request.debug_progress
+            and evaluated_transit_searches % request.debug_progress_every == 0
+        ):
+            print(
+                "Routing progress: evaluated "
+                f"{evaluated_transit_searches} search(es); no path yet."
+            )
+        result = td_dijkstra(
+            graph=sink_graph,
+            start_id=query_source_node_id,
+            goal_id=query_sink_node_id,
+            depart_time_str=request.depart_time,
+            assume_zero_missing=request.assume_zero_missing,
+            transfer_penalty_sec=request.transfer_penalty_sec,
+            route_change_penalty_sec=request.route_change_penalty_sec,
+            time_horizon_sec=request.time_horizon_sec,
+            max_wait_sec=request.max_wait_sec,
+            state_by=request.state_by,
+            debug_progress=request.debug_progress,
+            debug_progress_every=request.debug_progress_every,
+        )
+        if result.arrival_time_sec is not None:
+            result_without_query_nodes = _strip_query_terminals_from_result(
+                result=result,
+                query_source_node_id=query_source_node_id,
+                query_sink_node_id=query_sink_node_id,
+            )
+            first_path_node = (
+                result_without_query_nodes.stop_path[0]
+                if result_without_query_nodes.stop_path
+                else None
+            )
+            last_path_node = (
+                result_without_query_nodes.stop_path[-1]
+                if result_without_query_nodes.stop_path
+                else None
+            )
+            from_candidate = (
+                from_candidate_by_node_id.get(first_path_node)
+                if first_path_node is not None
+                else None
+            )
+            to_candidate = (
+                to_candidate_by_node_id.get(last_path_node)
+                if last_path_node is not None
+                else None
+            )
+            if from_candidate is None:
+                from_candidate = min(
+                    from_candidates, key=lambda candidate: candidate.walk_time_sec
+                )
+            if to_candidate is None:
+                to_candidate = min(
+                    to_candidates, key=lambda candidate: candidate.walk_time_sec
+                )
+            best_plan = RoutePlan(
+                from_candidate=from_candidate,
+                to_candidate=to_candidate,
+                transit_result=result_without_query_nodes,
+                transit_depart_time_sec=depart_time_sec + from_candidate.walk_time_sec,
+                arrival_time_sec=result.arrival_time_sec,
+            )
+
+    if request.debug_progress:
+        if best_plan is None:
+            print(
+                "Routing progress: completed "
+                f"{evaluated_transit_searches} search(es); no path found."
+            )
+        else:
+            best_arrival = seconds_to_time_str(best_plan.arrival_time_sec) or str(
+                best_plan.arrival_time_sec
+            )
+            print(
+                "Routing progress: completed "
+                f"{evaluated_transit_searches} search(es); best arrival {best_arrival}."
+            )
 
     if best_plan is None:
         raise SystemExit("No path found for the provided endpoints.")
@@ -269,9 +427,9 @@ def find_best_route_and_itinerary(
             "Evaluated coordinate candidates: "
             f"{len(from_candidates)} from x {len(to_candidates)} to = {evaluated_pairs} pair(s)."
         )
-    if evaluated_transit_pairs:
+    if evaluated_transit_searches:
         context_lines.append(
-            f"Evaluated transit graph pair(s): {evaluated_transit_pairs}."
+            f"Evaluated transit graph search(es): {evaluated_transit_searches}."
         )
     if from_mode == "coords":
         context_lines.append(
@@ -487,6 +645,40 @@ def _format_coord_label(lat: float | None, lon: float | None) -> str:
     return f"Coordinate ({lat:.6f}, {lon:.6f})"
 
 
+def _make_query_source_node_id(stop_id: str) -> str:
+    return f"{QUERY_SOURCE_NODE_PREFIX}::{stop_id}"
+
+
+def _make_query_sink_node_id(stop_id: str) -> str:
+    return f"{QUERY_SINK_NODE_PREFIX}::{stop_id}"
+
+
+def _strip_query_terminals_from_result(
+    *,
+    result: PathResult,
+    query_source_node_id: str,
+    query_sink_node_id: str,
+) -> PathResult:
+    trimmed_stop_path = list(result.stop_path)
+    trimmed_edge_path = list(result.edge_path)
+
+    if trimmed_stop_path and trimmed_stop_path[0] == query_source_node_id:
+        trimmed_stop_path = trimmed_stop_path[1:]
+        if trimmed_edge_path:
+            trimmed_edge_path = trimmed_edge_path[1:]
+
+    if trimmed_stop_path and trimmed_stop_path[-1] == query_sink_node_id:
+        trimmed_stop_path = trimmed_stop_path[:-1]
+        if trimmed_edge_path:
+            trimmed_edge_path = trimmed_edge_path[:-1]
+
+    return PathResult(
+        arrival_time_sec=result.arrival_time_sec,
+        stop_path=trimmed_stop_path,
+        edge_path=trimmed_edge_path,
+    )
+
+
 def _graph_node_ids_for_stop(graph, stop_id: str) -> list[str]:
     if hasattr(graph, "route_stop_ids_for_stop"):
         route_stop_ids = graph.route_stop_ids_for_stop(stop_id)
@@ -495,11 +687,30 @@ def _graph_node_ids_for_stop(graph, stop_id: str) -> list[str]:
     return [stop_id]
 
 
+def _query_edge_weights_and_candidates(
+    *,
+    graph,
+    candidates: list[EndpointCandidate],
+) -> tuple[dict[str, int], dict[str, EndpointCandidate]]:
+    edge_weights: dict[str, int] = {}
+    candidate_by_node_id: dict[str, EndpointCandidate] = {}
+    for candidate in candidates:
+        node_ids = _graph_node_ids_for_stop(graph, candidate.parent_id)
+        for node_id in node_ids:
+            existing_weight = edge_weights.get(node_id)
+            if existing_weight is None or candidate.walk_time_sec < existing_weight:
+                edge_weights[node_id] = candidate.walk_time_sec
+                candidate_by_node_id[node_id] = candidate
+    return edge_weights, candidate_by_node_id
+
+
 def _display_stop_ids_for_path(*, graph, stop_ids: list[str]) -> dict[str, str]:
     display_stop_ids: dict[str, str] = {}
     graph_nodes = getattr(graph, "nodes", None)
     for stop_id in stop_ids:
         if stop_id in {COORD_ORIGIN_STOP_ID, COORD_DEST_STOP_ID}:
+            continue
+        if stop_id.startswith((QUERY_SOURCE_NODE_PREFIX, QUERY_SINK_NODE_PREFIX)):
             continue
         display_stop_id = stop_id
         if isinstance(graph_nodes, dict):
