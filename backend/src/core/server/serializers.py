@@ -125,6 +125,8 @@ class RouteRequest(BaseModel):
     depart_time: str | None = None
     transfer_penalty_sec: int | None = None
     route_change_penalty_sec: int | None = None
+    max_wait_sec: int | None = None
+    heuristic_max_speed_mps: float | None = None
     state_by: str | None = None
     time_horizon_sec: int | None = None
     disable_walking: bool | None = None

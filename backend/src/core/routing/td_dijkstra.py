@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from bisect import bisect_left
+from dataclasses import dataclass
 import heapq
 import itertools
 import math
-from dataclasses import dataclass
-from bisect import bisect_left
 
 from core.routing.types import GraphLike
 from core.routing.utils import parse_time_to_seconds, seconds_to_time_str
 
 RIDE_EDGE_KINDS = {"trip", "ride"}
+EARTH_RADIUS_M = 6_371_000.0
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,53 @@ class ChosenEdge:
     transfer_type: int | None
     apply_penalty: bool = True
     label: str | None = None
+
+
+def _graph_coordinates_for_node(
+    graph: GraphLike,
+    node_id: str,
+) -> tuple[float, float] | None:
+    if hasattr(graph, "coordinates_for_node"):
+        coords = graph.coordinates_for_node(node_id)
+        if (
+            isinstance(coords, tuple)
+            and len(coords) == 2
+            and isinstance(coords[0], (int, float))
+            and isinstance(coords[1], (int, float))
+        ):
+            return float(coords[0]), float(coords[1])
+
+    graph_nodes = getattr(graph, "nodes", None)
+    if not isinstance(graph_nodes, dict):
+        return None
+    node_data = graph_nodes.get(node_id)
+    if not isinstance(node_data, dict):
+        return None
+    lat = node_data.get("stop_lat")
+    lon = node_data.get("stop_lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    return float(lat), float(lon)
+
+
+def _haversine_distance_m(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+) -> float:
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = (
+        math.sin(dlat / 2.0) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2.0) ** 2
+    )
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return EARTH_RADIUS_M * c
 
 
 def _edge_schedule_seconds(edge) -> tuple[int | None, int | None]:
@@ -145,6 +193,7 @@ def td_dijkstra(
     time_horizon_sec: int | None = 4 * 3600,
     max_wait_sec: int | None = None,
     state_by: str = "route",
+    heuristic_max_speed_mps: float | None = None,
     debug_progress: bool = False,
     debug_progress_every: int = 50000,
 ) -> PathResult:
@@ -174,20 +223,52 @@ def td_dijkstra(
         raise ValueError("state_by must be 'route' or 'trip'.")
     if max_wait_sec is not None and max_wait_sec <= 0:
         raise ValueError("max_wait_sec must be > 0 when provided.")
+    if heuristic_max_speed_mps is not None and heuristic_max_speed_mps <= 0:
+        raise ValueError("heuristic_max_speed_mps must be > 0 when provided.")
     if debug_progress_every <= 0:
         raise ValueError("debug_progress_every must be > 0.")
     horizon_end = (
         depart_time_sec + time_horizon_sec if time_horizon_sec is not None else None
     )
 
+    goal_coords = _graph_coordinates_for_node(graph, goal_id)
+    heuristic_cache: dict[str, int] = {}
+
+    def _heuristic_seconds(node_id: str) -> int:
+        if heuristic_max_speed_mps is None or goal_coords is None:
+            return 0
+        cached = heuristic_cache.get(node_id)
+        if cached is not None:
+            return cached
+        node_coords = _graph_coordinates_for_node(graph, node_id)
+        if node_coords is None:
+            heuristic_cache[node_id] = 0
+            return 0
+        remaining_m = _haversine_distance_m(
+            node_coords[0],
+            node_coords[1],
+            goal_coords[0],
+            goal_coords[1],
+        )
+        heuristic = int(math.ceil(remaining_m / heuristic_max_speed_mps))
+        heuristic_cache[node_id] = heuristic
+        return heuristic
+
     start_state = (start_id, None)
     counter = itertools.count()
-    heap: list[tuple[int, int, str, str | None]] = [
-        (depart_time_sec, next(counter), start_id, None)
+    heap: list[tuple[int, int, int, str, str | None]] = [
+        (
+            depart_time_sec + _heuristic_seconds(start_id),
+            next(counter),
+            depart_time_sec,
+            start_id,
+            None,
+        )
     ]
     dist: dict[tuple[str, str | None], int] = {start_state: depart_time_sec}
     prev: dict[tuple[str, str | None], tuple[tuple[str, str | None], object]] = {}
     goal_state: tuple[str, str | None] | None = None
+    best_goal_arrival_sec: int | None = None
     expanded_states = 0
     relaxed_edges = 0
 
@@ -198,9 +279,20 @@ def td_dijkstra(
         )
 
     while heap:
-        current_time, _order, node, active_trip_id = heapq.heappop(heap)
+        (
+            estimated_total_sec,
+            _order,
+            current_time,
+            node,
+            active_trip_id,
+        ) = heapq.heappop(heap)
         state = (node, active_trip_id)
         if current_time != dist.get(state, 0):
+            continue
+        if (
+            best_goal_arrival_sec is not None
+            and estimated_total_sec >= best_goal_arrival_sec
+        ):
             continue
         expanded_states += 1
         if debug_progress and expanded_states % debug_progress_every == 0:
@@ -212,11 +304,49 @@ def td_dijkstra(
                 f"frontier={len(heap)}, current={node}@{current_time_label}."
             )
         if node == goal_id:
-            goal_state = state
-            break
+            if best_goal_arrival_sec is None or current_time < best_goal_arrival_sec:
+                best_goal_arrival_sec = current_time
+                goal_state = state
+            if not heap or (
+                best_goal_arrival_sec is not None
+                and heap[0][0] >= best_goal_arrival_sec
+            ):
+                break
+            continue
 
         if horizon_end is not None and current_time > horizon_end:
             continue
+
+        def _relax(
+            *,
+            next_node: str,
+            next_active: str | None,
+            new_time: int,
+            edge_obj: object,
+        ) -> None:
+            nonlocal relaxed_edges
+            next_state = (next_node, next_active)
+            if new_time >= dist.get(next_state, math.inf):
+                return
+            estimated_arrival = new_time + _heuristic_seconds(next_node)
+            if (
+                best_goal_arrival_sec is not None
+                and estimated_arrival >= best_goal_arrival_sec
+            ):
+                return
+            dist[next_state] = new_time
+            prev[next_state] = (state, edge_obj)
+            relaxed_edges += 1
+            heapq.heappush(
+                heap,
+                (
+                    estimated_arrival,
+                    next(counter),
+                    new_time,
+                    next_node,
+                    next_active,
+                ),
+            )
 
         use_buckets_override = getattr(graph, "_use_bucket_mode", None)
         if isinstance(use_buckets_override, bool):
@@ -240,14 +370,12 @@ def td_dijkstra(
                     new_time = current_time + penalty
                 if new_time is None:
                     continue
-                next_state = (edge.to_stop_id, None)
-                if new_time < dist.get(next_state, math.inf):
-                    dist[next_state] = new_time
-                    prev[next_state] = (state, edge)
-                    relaxed_edges += 1
-                    heapq.heappush(
-                        heap, (new_time, next(counter), edge.to_stop_id, None)
-                    )
+                _relax(
+                    next_node=edge.to_stop_id,
+                    next_active=None,
+                    new_time=new_time,
+                    edge_obj=edge,
+                )
 
             for bucket in graph.trip_buckets_from(node):
                 if not bucket.dep_secs:
@@ -290,15 +418,12 @@ def td_dijkstra(
                     arr_time_sec=arr_sec,
                     transfer_type=None,
                 )
-                next_state = (bucket.to_stop_id, next_active)
-                if new_time < dist.get(next_state, math.inf):
-                    dist[next_state] = new_time
-                    prev[next_state] = (state, chosen_edge)
-                    relaxed_edges += 1
-                    heapq.heappush(
-                        heap,
-                        (new_time, next(counter), bucket.to_stop_id, next_active),
-                    )
+                _relax(
+                    next_node=bucket.to_stop_id,
+                    next_active=next_active,
+                    new_time=new_time,
+                    edge_obj=chosen_edge,
+                )
             continue
 
         pruned_edges = _prune_ride_edges_to_first_departure(
@@ -380,15 +505,12 @@ def td_dijkstra(
             next_active = None
             if is_trip_edge:
                 next_active = edge_route_id if state_by == "route" else edge_trip_id
-            next_state = (edge.to_stop_id, next_active)
-            if new_time < dist.get(next_state, math.inf):
-                dist[next_state] = new_time
-                prev[next_state] = (state, edge)
-                relaxed_edges += 1
-                heapq.heappush(
-                    heap,
-                    (new_time, next(counter), edge.to_stop_id, next_active),
-                )
+            _relax(
+                next_node=edge.to_stop_id,
+                next_active=next_active,
+                new_time=new_time,
+                edge_obj=edge,
+            )
 
     if goal_state is None:
         if debug_progress:

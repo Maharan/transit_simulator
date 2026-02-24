@@ -59,10 +59,14 @@ class _QueryAugmentedGraph:
         source_edge_weights: dict[str, int],
         sink_node_id: str,
         sink_edge_weights: dict[str, int],
+        source_coords: tuple[float, float] | None = None,
+        sink_coords: tuple[float, float] | None = None,
     ) -> None:
         self._base_graph = base_graph
         self._source_node_id = source_node_id
         self._sink_node_id = sink_node_id
+        self._source_coords = source_coords
+        self._sink_coords = sink_coords
         self._source_edges = [
             _QuerySinkEdge(
                 to_stop_id=node_id,
@@ -116,6 +120,15 @@ class _QueryAugmentedGraph:
             return []
         return self._base_graph.trip_buckets_from(stop_id)
 
+    def coordinates_for_node(self, stop_id: str) -> tuple[float, float] | None:
+        if stop_id == self._source_node_id:
+            return self._source_coords
+        if stop_id == self._sink_node_id:
+            return self._sink_coords
+        if hasattr(self._base_graph, "coordinates_for_node"):
+            return self._base_graph.coordinates_for_node(stop_id)
+        return _node_coords_for_heuristic(self._base_graph, stop_id)
+
     def __getattr__(self, name: str):
         return getattr(self._base_graph, name)
 
@@ -167,7 +180,8 @@ class RoutePlannerRequest:
     graph_cache_path: Path | None = None
     rebuild_graph_cache: bool = False
     symmetric_transfers: bool = False
-    graph_cache_version: int = 6
+    graph_cache_version: int = 7
+    heuristic_max_speed_mps: float | None = 55.0
     graph_method: str = DEFAULT_GRAPH_METHOD
     anytime_default_headway_sec: int | None = None
     debug_progress: bool = False
@@ -215,6 +229,11 @@ def find_best_route_and_itinerary(
         raise SystemExit("--coord-max-distance-m must be > 0.")
     if request.max_wait_sec is not None and request.max_wait_sec <= 0:
         raise SystemExit("--max-wait-sec must be > 0 when provided.")
+    if (
+        request.heuristic_max_speed_mps is not None
+        and request.heuristic_max_speed_mps <= 0
+    ):
+        raise SystemExit("--heuristic-max-speed-mps must be > 0 when provided.")
     if request.debug_progress_every <= 0:
         raise SystemExit("--progress-every must be > 0.")
     if not request.disable_walking:
@@ -288,6 +307,20 @@ def find_best_route_and_itinerary(
         graph=graph,
         candidates=to_candidates,
     )
+    source_coords = _endpoint_coords_for_heuristic(
+        graph=graph,
+        mode=from_mode,
+        lat=request.from_lat,
+        lon=request.from_lon,
+        candidates=from_candidates,
+    )
+    sink_coords = _endpoint_coords_for_heuristic(
+        graph=graph,
+        mode=to_mode,
+        lat=request.to_lat,
+        lon=request.to_lon,
+        candidates=to_candidates,
+    )
     if source_edge_weights and sink_edge_weights:
         query_source_node_id = _make_query_source_node_id("all")
         query_sink_node_id = _make_query_sink_node_id("all")
@@ -297,6 +330,8 @@ def find_best_route_and_itinerary(
             source_edge_weights=source_edge_weights,
             sink_node_id=query_sink_node_id,
             sink_edge_weights=sink_edge_weights,
+            source_coords=source_coords,
+            sink_coords=sink_coords,
         )
         evaluated_transit_searches = 1
         if (
@@ -318,6 +353,7 @@ def find_best_route_and_itinerary(
             time_horizon_sec=request.time_horizon_sec,
             max_wait_sec=request.max_wait_sec,
             state_by=request.state_by,
+            heuristic_max_speed_mps=request.heuristic_max_speed_mps,
             debug_progress=request.debug_progress,
             debug_progress_every=request.debug_progress_every,
         )
@@ -702,6 +738,50 @@ def _query_edge_weights_and_candidates(
                 edge_weights[node_id] = candidate.walk_time_sec
                 candidate_by_node_id[node_id] = candidate
     return edge_weights, candidate_by_node_id
+
+
+def _node_coords_for_heuristic(graph, node_id: str) -> tuple[float, float] | None:
+    if hasattr(graph, "coordinates_for_node"):
+        coords = graph.coordinates_for_node(node_id)
+        if (
+            isinstance(coords, tuple)
+            and len(coords) == 2
+            and isinstance(coords[0], (int, float))
+            and isinstance(coords[1], (int, float))
+        ):
+            return float(coords[0]), float(coords[1])
+
+    graph_nodes = getattr(graph, "nodes", None)
+    if not isinstance(graph_nodes, dict):
+        return None
+    node_data = graph_nodes.get(node_id)
+    if not isinstance(node_data, dict):
+        return None
+    lat = node_data.get("stop_lat")
+    lon = node_data.get("stop_lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    return float(lat), float(lon)
+
+
+def _endpoint_coords_for_heuristic(
+    *,
+    graph,
+    mode: str,
+    lat: float | None,
+    lon: float | None,
+    candidates: list[EndpointCandidate],
+) -> tuple[float, float] | None:
+    if mode == "coords" and lat is not None and lon is not None:
+        return float(lat), float(lon)
+
+    for candidate in candidates:
+        node_ids = _graph_node_ids_for_stop(graph, candidate.parent_id)
+        for node_id in node_ids:
+            coords = _node_coords_for_heuristic(graph, node_id)
+            if coords is not None:
+                return coords
+    return None
 
 
 def _display_stop_ids_for_path(*, graph, stop_ids: list[str]) -> dict[str, str]:

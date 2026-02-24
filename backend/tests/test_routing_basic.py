@@ -288,3 +288,32 @@ def test_td_dijkstra_keeps_first_departure_per_trip_when_state_by_trip() -> None
     )
     assert result.arrival_time_sec == 9 * 3600 + 180
     assert result.stop_path == ["A", "B"]
+
+
+def test_td_dijkstra_haversine_heuristic_keeps_optimal_path() -> None:
+    graph = _OverrideEdgeModeGraph(
+        {
+            "A": [
+                _Edge(to_stop_id="B", weight_sec=60, kind="transfer"),
+                _Edge(to_stop_id="C", weight_sec=10, kind="transfer"),
+            ],
+            "B": [],
+            "C": [_Edge(to_stop_id="B", weight_sec=300, kind="transfer")],
+        }
+    )
+    graph.nodes = {
+        "A": {"stop_lat": 53.550, "stop_lon": 9.993},
+        "B": {"stop_lat": 53.560, "stop_lon": 10.003},
+        "C": {"stop_lat": 53.900, "stop_lon": 10.900},
+    }
+
+    result = td_dijkstra(
+        graph=graph,
+        start_id="A",
+        goal_id="B",
+        depart_time_str="09:00:00",
+        transfer_penalty_sec=0,
+        heuristic_max_speed_mps=55.0,
+    )
+    assert result.arrival_time_sec == 9 * 3600 + 60
+    assert result.stop_path == ["A", "B"]

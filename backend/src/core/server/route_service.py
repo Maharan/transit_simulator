@@ -74,6 +74,8 @@ class RouteService:
         finally:
             session.close()
         itinerary = result.itinerary
+        best_plan_data = asdict(result.best_plan)
+        self._normalize_best_plan_edge_fields(best_plan_data)
         return {
             "feed_id": result.feed_id,
             "cache_logs": result.cache_logs,
@@ -87,8 +89,25 @@ class RouteService:
                 ],
                 "legs": [asdict(leg) for leg in itinerary.legs],
             },
-            "best_plan": asdict(result.best_plan),
+            "best_plan": best_plan_data,
         }
+
+    @staticmethod
+    def _normalize_best_plan_edge_fields(best_plan_data: dict[str, Any]) -> None:
+        transit_result = best_plan_data.get("transit_result")
+        if not isinstance(transit_result, dict):
+            return
+        edge_path = transit_result.get("edge_path")
+        if not isinstance(edge_path, list):
+            return
+        for edge in edge_path:
+            if not isinstance(edge, dict):
+                continue
+            if "to_stop_id" in edge:
+                continue
+            to_route_stop_id = edge.pop("to_route_stop_id", None)
+            if to_route_stop_id is not None:
+                edge["to_stop_id"] = to_route_stop_id
 
     def _request_from_payload(self, payload: RoutePayload) -> RoutePlannerRequest:
         request_data = self._default_request_data()

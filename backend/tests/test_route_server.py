@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import core.server.fastapi_app as fastapi_app_module
 import core.server.route_service as route_service_module
 from core.server.serializers import RouteRequest as ApiRouteRequest
+from core.graph.graph_methods.trip_stop_graph import TripStopEdge
 import scripts.route_server as route_server
 from core.routing.route_planner import EndpointCandidate, RoutePlan, RoutePlannerRequest
 from core.routing.td_dijkstra import PathResult
@@ -207,6 +208,93 @@ def test_route_uses_structured_legs_from_itinerary(monkeypatch) -> None:
     )
     assert response["itinerary"]["legs"][0]["mode"] == "walk"
     assert response["itinerary"]["legs"][0]["from_stop"] == "A"
+
+
+def test_route_normalizes_trip_stop_edge_to_stop_id_for_best_plan(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+    monkeypatch.setattr(
+        service,
+        "_request_from_payload",
+        lambda _payload: RoutePlannerRequest(
+            from_stop_name="Origin",
+            to_stop_name="Destination",
+            feed_id="feed-1",
+        ),
+    )
+
+    candidate = EndpointCandidate(
+        stop_id="S1",
+        stop_name="Stop 1",
+        parent_id="S1",
+        parent_name="Stop 1",
+        walk_distance_m=0.0,
+        walk_time_sec=0,
+    )
+
+    def fake_find_best_route_and_itinerary(
+        *,
+        session,
+        request,
+        in_memory_graph_cache=None,
+    ):
+        return type(
+            "FakeRoutePlannerResult",
+            (),
+            {
+                "feed_id": "feed-1",
+                "cache_logs": [],
+                "context_lines": [],
+                "best_plan": RoutePlan(
+                    from_candidate=candidate,
+                    to_candidate=candidate,
+                    transit_result=PathResult(
+                        arrival_time_sec=100,
+                        stop_path=["S1", "S2"],
+                        edge_path=[
+                            TripStopEdge(
+                                to_route_stop_id="S2",
+                                weight_sec=30,
+                                kind="transfer",
+                                transfer_type=2,
+                                apply_penalty=True,
+                                label="station_link",
+                            )
+                        ],
+                    ),
+                    transit_depart_time_sec=0,
+                    arrival_time_sec=100,
+                ),
+                "itinerary": Itinerary(
+                    summary="summary",
+                    timing="timing",
+                    path_lines=[],
+                    leg_lines=[],
+                ),
+            },
+        )()
+
+    monkeypatch.setattr(
+        route_service_module,
+        "find_best_route_and_itinerary",
+        fake_find_best_route_and_itinerary,
+    )
+
+    response = service.route(
+        ApiRouteRequest(
+            from_lat=53.549053,
+            from_lon=9.989263,
+            to_lat=53.582231,
+            to_lon=10.067991,
+        )
+    )
+
+    edge = response["best_plan"]["transit_result"]["edge_path"][0]
+    assert edge["to_stop_id"] == "S2"
+    assert "to_route_stop_id" not in edge
 
 
 def test_fastapi_health_endpoint(monkeypatch) -> None:

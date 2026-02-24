@@ -19,6 +19,7 @@ from .trip_stop_anytime_graph import (
 )
 from .trip_stop_graph import (
     DEFAULT_SAME_STOP_TRANSFER_SEC,
+    DEFAULT_TRANSFER_EDGE_PENALTY_SEC,
     TRIP_STOP_NODE_SEPARATOR,
     TripStopEdge,
     TripStopGraph,
@@ -43,6 +44,7 @@ __all__ = [
     "TripStopAnytimeGraph",
     "build_trip_stop_anytime_graph_from_gtfs",
     "DEFAULT_SAME_STOP_TRANSFER_SEC",
+    "DEFAULT_TRANSFER_EDGE_PENALTY_SEC",
     "TRIP_STOP_NODE_SEPARATOR",
     "TripStopEdge",
     "TripStopGraph",

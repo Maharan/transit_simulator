@@ -40,6 +40,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=300,
     )
     parser.add_argument(
+        "--heuristic-max-speed-mps",
+        type=float,
+        default=55.0,
+    )
+    parser.add_argument(
         "--state-by",
         choices=["route", "trip"],
         default="route",
@@ -73,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Fallback headway for trip_stop_anytime when route headway is unknown.",
     )
-    parser.add_argument("--graph-cache-version", type=int, default=6)
+    parser.add_argument("--graph-cache-version", type=int, default=7)
     parser.add_argument(
         "--rebuild-on-start",
         action="store_true",

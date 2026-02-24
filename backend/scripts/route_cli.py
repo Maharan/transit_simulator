@@ -110,6 +110,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum waiting time allowed before boarding a ride/trip edge (default: 1200).",
     )
     parser.add_argument(
+        "--heuristic-max-speed-mps",
+        type=float,
+        default=55.0,
+        help="Max speed (m/s) used by the haversine heuristic (default: 55.0).",
+    )
+    parser.add_argument(
         "--state-by",
         choices=["route", "trip"],
         default="route",
@@ -246,6 +252,7 @@ def main() -> None:
                 transfer_penalty_sec=args.transfer_penalty,
                 route_change_penalty_sec=args.route_change_penalty,
                 max_wait_sec=args.max_wait_sec,
+                heuristic_max_speed_mps=args.heuristic_max_speed_mps,
                 state_by=args.state_by,
                 time_horizon_sec=args.time_horizon_sec,
                 disable_walking=args.disable_walking,
