@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -63,6 +65,8 @@ class LegResponse(BaseModel):
 class StopResponse(BaseModel):
     stop_id: str
     stop_name: str
+    stop_lat: float | None = None
+    stop_lon: float | None = None
 
 
 class PathSegmentEdgeResponse(BaseModel):
@@ -84,6 +88,7 @@ class PathSegmentResponse(BaseModel):
     from_stop: StopResponse
     to_stop: StopResponse
     edge: PathSegmentEdgeResponse
+    geometry: list[list[float]] | None = None
 
 
 class ItineraryResponse(BaseModel):
@@ -104,6 +109,29 @@ class RouteResponse(BaseModel):
 
 class ReloadGraphResponse(BaseModel):
     cache_logs: list[str]
+
+
+class NetworkLineGeometryResponse(BaseModel):
+    type: Literal["LineString", "MultiLineString"]
+    coordinates: list[list[float]] | list[list[list[float]]]
+
+
+class NetworkLinePropertiesResponse(BaseModel):
+    line_id: str
+    line_family: str
+    color: str
+    offset_px: float = 0.0
+
+
+class NetworkLineFeatureResponse(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    properties: NetworkLinePropertiesResponse
+    geometry: NetworkLineGeometryResponse
+
+
+class NetworkLineFeatureCollectionResponse(BaseModel):
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[NetworkLineFeatureResponse]
 
 
 class RouteRequest(BaseModel):

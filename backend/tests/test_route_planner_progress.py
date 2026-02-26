@@ -97,7 +97,7 @@ def test_find_best_route_progress_passes_through_and_prints(
     monkeypatch.setattr(
         route_planner,
         "create_itinerary_data",
-        lambda **_kwargs: ({"A": "A", "B": "B"}, {}),
+        lambda **_kwargs: ({"A": "A", "B": "B"}, {}, {}),
     )
     monkeypatch.setattr(
         route_planner,
@@ -202,7 +202,7 @@ def test_find_best_route_uses_one_global_search_for_all_candidate_pairs(
     monkeypatch.setattr(
         route_planner,
         "create_itinerary_data",
-        lambda **_kwargs: ({"A": "A", "B": "B"}, {}),
+        lambda **_kwargs: ({"A": "A", "B": "B"}, {}, {}),
     )
     monkeypatch.setattr(
         route_planner,

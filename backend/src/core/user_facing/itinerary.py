@@ -36,10 +36,12 @@ class ItineraryBuilder:
         self,
         *,
         stop_names: dict[str, str],
+        stop_coords: dict[str, tuple[float, float]],
         route_short_names: dict[str, str],
         transfer_penalty_sec: int,
     ) -> None:
         self._stop_names = stop_names
+        self._stop_coords = stop_coords
         self._route_short_names = route_short_names
         self._transfer_penalty_sec = transfer_penalty_sec
 
@@ -87,13 +89,20 @@ class ItineraryBuilder:
     def _build_stops(self, result: ResultLike) -> list["ItineraryStop"]:
         if not result.stop_path:
             return []
-        return [
-            ItineraryStop(
-                stop_id=stop_id,
-                stop_name=self._stop_names.get(stop_id, stop_id),
+        stops: list[ItineraryStop] = []
+        for stop_id in result.stop_path:
+            coords = self._stop_coords.get(stop_id)
+            stop_lat = coords[0] if coords is not None else None
+            stop_lon = coords[1] if coords is not None else None
+            stops.append(
+                ItineraryStop(
+                    stop_id=stop_id,
+                    stop_name=self._stop_names.get(stop_id, stop_id),
+                    stop_lat=stop_lat,
+                    stop_lon=stop_lon,
+                )
             )
-            for stop_id in result.stop_path
-        ]
+        return stops
 
     def _build_path_segments(
         self,
@@ -364,6 +373,8 @@ class ItineraryLeg:
 class ItineraryStop:
     stop_id: str
     stop_name: str
+    stop_lat: float | None = None
+    stop_lon: float | None = None
 
 
 @dataclass(frozen=True)
@@ -394,7 +405,7 @@ def create_itinerary_data(
     session: "Session",
     feed_id: str,
     stop_ids: list[str],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, tuple[float, float]], dict[str, str]]:
     from core.gtfs.models import Route, Stop
 
     route_rows = (
@@ -408,14 +419,20 @@ def create_itinerary_data(
         if route_id and route_short_name
     }
 
-    stop_name_rows = (
-        session.query(Stop.stop_id, Stop.stop_name)
+    stop_rows = (
+        session.query(Stop.stop_id, Stop.stop_name, Stop.stop_lat, Stop.stop_lon)
         .filter(Stop.feed_id == feed_id)
         .filter(Stop.stop_id.in_(stop_ids))
         .all()
     )
-    stop_names = {stop_id: stop_name for stop_id, stop_name in stop_name_rows}
-    return stop_names, route_short_names
+    stop_names: dict[str, str] = {}
+    stop_coords: dict[str, tuple[float, float]] = {}
+    for stop_id, stop_name, stop_lat, stop_lon in stop_rows:
+        if stop_name:
+            stop_names[stop_id] = stop_name
+        if isinstance(stop_lat, (int, float)) and isinstance(stop_lon, (int, float)):
+            stop_coords[stop_id] = (float(stop_lat), float(stop_lon))
+    return stop_names, stop_coords, route_short_names
 
 
 def create_itinerary(
@@ -425,11 +442,13 @@ def create_itinerary(
     to_stop_name: str,
     depart_time_str: str,
     stop_names: dict[str, str],
+    stop_coords: dict[str, tuple[float, float]] | None = None,
     route_short_names: dict[str, str],
     transfer_penalty_sec: int,
 ) -> Itinerary:
     builder = ItineraryBuilder(
         stop_names=stop_names,
+        stop_coords=stop_coords or {},
         route_short_names=route_short_names,
         transfer_penalty_sec=transfer_penalty_sec,
     )

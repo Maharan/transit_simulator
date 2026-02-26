@@ -13,6 +13,8 @@ from core.routing.route_planner import (
 )
 from infra import Database
 
+from .network_lines import load_network_lines_geojson
+from .segment_shapes import attach_path_segment_geometries
 from .serializers import RouteRequest as RoutePayload
 
 
@@ -71,26 +73,41 @@ class RouteService:
                 request=request,
                 in_memory_graph_cache=self._graph_cache,
             )
+            itinerary = result.itinerary
+            itinerary_path_segments = [
+                asdict(segment) for segment in itinerary.path_segments
+            ]
+            attach_path_segment_geometries(
+                session=session,
+                feed_id=result.feed_id,
+                path_segments=itinerary_path_segments,
+            )
+
+            best_plan_data = asdict(result.best_plan)
+            self._normalize_best_plan_edge_fields(best_plan_data)
+            return {
+                "feed_id": result.feed_id,
+                "cache_logs": result.cache_logs,
+                "context_lines": result.context_lines,
+                "itinerary": {
+                    "summary": itinerary.summary,
+                    "timing": itinerary.timing,
+                    "stops": [asdict(stop) for stop in itinerary.stops],
+                    "path_segments": itinerary_path_segments,
+                    "legs": [asdict(leg) for leg in itinerary.legs],
+                },
+                "best_plan": best_plan_data,
+            }
         finally:
             session.close()
-        itinerary = result.itinerary
-        best_plan_data = asdict(result.best_plan)
-        self._normalize_best_plan_edge_fields(best_plan_data)
-        return {
-            "feed_id": result.feed_id,
-            "cache_logs": result.cache_logs,
-            "context_lines": result.context_lines,
-            "itinerary": {
-                "summary": itinerary.summary,
-                "timing": itinerary.timing,
-                "stops": [asdict(stop) for stop in itinerary.stops],
-                "path_segments": [
-                    asdict(segment) for segment in itinerary.path_segments
-                ],
-                "legs": [asdict(leg) for leg in itinerary.legs],
-            },
-            "best_plan": best_plan_data,
-        }
+
+    def network_lines(self, *, feed_id: str | None = None) -> dict[str, Any]:
+        session = self._database.session()
+        try:
+            resolved_feed_id = resolve_feed_id(session, feed_id or self._args.feed_id)
+            return load_network_lines_geojson(session=session, feed_id=resolved_feed_id)
+        finally:
+            session.close()
 
     @staticmethod
     def _normalize_best_plan_edge_fields(best_plan_data: dict[str, Any]) -> None:

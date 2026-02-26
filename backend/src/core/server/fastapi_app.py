@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from .route_service import RouteService
 from .serializers import (
     HealthResponse,
+    NetworkLineFeatureCollectionResponse,
     ReloadGraphRequest,
     ReloadGraphResponse,
     RouteRequest,
@@ -35,6 +36,21 @@ def build_fastapi_app(service: RouteService) -> FastAPI:
         try:
             return ReloadGraphResponse(
                 cache_logs=service.preload(rebuild=request.rebuild)
+            )
+        except SystemExit as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive guardrail.
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/network-lines", response_model=NetworkLineFeatureCollectionResponse)
+    def network_lines(
+        feed_id: str | None = None,
+    ) -> NetworkLineFeatureCollectionResponse:
+        try:
+            return NetworkLineFeatureCollectionResponse.model_validate(
+                service.network_lines(feed_id=feed_id)
             )
         except SystemExit as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

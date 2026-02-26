@@ -297,6 +297,35 @@ def test_route_normalizes_trip_stop_edge_to_stop_id_for_best_plan(
     assert "to_route_stop_id" not in edge
 
 
+def test_network_lines_uses_resolved_feed(monkeypatch) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args(["--feed-id", "feed-default"])
+    service = route_service_module.RouteService(args)
+
+    monkeypatch.setattr(
+        route_service_module,
+        "resolve_feed_id",
+        lambda _session, feed_id: f"{feed_id}-resolved",
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_load_network_lines_geojson(*, session, feed_id: str):
+        captured["feed_id"] = feed_id
+        return {"type": "FeatureCollection", "features": []}
+
+    monkeypatch.setattr(
+        route_service_module,
+        "load_network_lines_geojson",
+        fake_load_network_lines_geojson,
+    )
+
+    payload = service.network_lines()
+
+    assert payload["type"] == "FeatureCollection"
+    assert captured["feed_id"] == "feed-default-resolved"
+
+
 def test_fastapi_health_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
     args = route_server._build_parser().parse_args([])
@@ -348,11 +377,29 @@ def test_fastapi_route_endpoint_returns_typed_payload(monkeypatch) -> None:
             "itinerary": {
                 "summary": "summary",
                 "timing": "timing",
-                "stops": [{"stop_id": "S1", "stop_name": "A"}],
+                "stops": [
+                    {
+                        "stop_id": "S1",
+                        "stop_name": "A",
+                        "stop_lat": 53.55,
+                        "stop_lon": 9.99,
+                    }
+                ],
                 "path_segments": [
                     {
-                        "from_stop": {"stop_id": "S1", "stop_name": "A"},
-                        "to_stop": {"stop_id": "S2", "stop_name": "B"},
+                        "from_stop": {
+                            "stop_id": "S1",
+                            "stop_name": "A",
+                            "stop_lat": 53.55,
+                            "stop_lon": 9.99,
+                        },
+                        "to_stop": {
+                            "stop_id": "S2",
+                            "stop_name": "B",
+                            "stop_lat": 53.56,
+                            "stop_lon": 10.0,
+                        },
+                        "geometry": [[9.99, 53.55], [10.0, 53.56]],
                         "edge": {
                             "kind": "trip",
                             "label": None,
@@ -426,9 +473,50 @@ def test_fastapi_route_endpoint_returns_typed_payload(monkeypatch) -> None:
     assert response.status_code == 200
     assert payload["feed_id"] == "feed-1"
     assert payload["itinerary"]["legs"][0]["mode"] == "walk"
+    assert payload["itinerary"]["stops"][0]["stop_lat"] == 53.55
+    assert payload["itinerary"]["stops"][0]["stop_lon"] == 9.99
     assert payload["itinerary"]["path_segments"][0]["edge"]["kind"] == "trip"
+    assert payload["itinerary"]["path_segments"][0]["geometry"][0] == [9.99, 53.55]
     assert payload["best_plan"]["to_candidate"]["stop_id"] == "S2"
     assert payload["best_plan"]["transit_result"]["edge_path"][0]["kind"] == "trip"
+
+
+def test_fastapi_network_lines_endpoint_returns_typed_payload(monkeypatch) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+    monkeypatch.setattr(
+        service,
+        "network_lines",
+        lambda feed_id=None: {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "line_id": "U1",
+                        "line_family": "u_bahn",
+                        "color": "#005AAE",
+                        "offset_px": -3.0,
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[9.95, 53.55], [10.02, 53.58]],
+                    },
+                }
+            ],
+        },
+    )
+    app = fastapi_app_module.build_fastapi_app(service)
+    client = TestClient(app)
+
+    response = client.get("/network-lines")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["type"] == "FeatureCollection"
+    assert payload["features"][0]["properties"]["line_id"] == "U1"
+    assert payload["features"][0]["properties"]["line_family"] == "u_bahn"
 
 
 def test_fastapi_reload_graph_endpoint(monkeypatch) -> None:

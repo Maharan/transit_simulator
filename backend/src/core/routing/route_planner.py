@@ -427,7 +427,7 @@ def find_best_route_and_itinerary(
         graph=graph,
         stop_ids=itinerary_result.stop_path,
     )
-    stop_names_raw, route_short_names = create_itinerary_data(
+    stop_names_raw, stop_coords_raw, route_short_names = create_itinerary_data(
         session=session,
         feed_id=feed_id,
         stop_ids=sorted(set(display_stop_ids.values())),
@@ -436,15 +436,30 @@ def find_best_route_and_itinerary(
         stop_id: stop_names_raw.get(display_stop_id, display_stop_id)
         for stop_id, display_stop_id in display_stop_ids.items()
     }
+    stop_coords = {
+        stop_id: stop_coords_raw[display_stop_id]
+        for stop_id, display_stop_id in display_stop_ids.items()
+        if display_stop_id in stop_coords_raw
+    }
 
     from_stop_label = best_plan.from_candidate.parent_name
     to_stop_label = best_plan.to_candidate.parent_name
     if from_mode == "coords":
         from_stop_label = _format_coord_label(request.from_lat, request.from_lon)
         stop_names[COORD_ORIGIN_STOP_ID] = from_stop_label
+        if request.from_lat is not None and request.from_lon is not None:
+            stop_coords[COORD_ORIGIN_STOP_ID] = (
+                float(request.from_lat),
+                float(request.from_lon),
+            )
     if to_mode == "coords":
         to_stop_label = _format_coord_label(request.to_lat, request.to_lon)
         stop_names[COORD_DEST_STOP_ID] = to_stop_label
+        if request.to_lat is not None and request.to_lon is not None:
+            stop_coords[COORD_DEST_STOP_ID] = (
+                float(request.to_lat),
+                float(request.to_lon),
+            )
 
     itinerary = create_itinerary(
         result=itinerary_result,
@@ -452,6 +467,7 @@ def find_best_route_and_itinerary(
         to_stop_name=to_stop_label,
         depart_time_str=request.depart_time,
         stop_names=stop_names,
+        stop_coords=stop_coords,
         route_short_names=route_short_names,
         transfer_penalty_sec=request.transfer_penalty_sec,
     )

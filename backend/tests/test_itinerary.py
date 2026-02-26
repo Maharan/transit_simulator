@@ -58,6 +58,11 @@ def test_itinerary_formats_walk_and_trip_legs() -> None:
         to_stop_name="End",
         depart_time_str="09:00:00",
         stop_names={"A": "Start", "B": "Mid", "C": "End"},
+        stop_coords={
+            "A": (53.551, 9.993),
+            "B": (53.556, 10.002),
+            "C": (53.562, 10.014),
+        },
         route_short_names={"R1": "S1"},
         transfer_penalty_sec=300,
     )
@@ -67,6 +72,8 @@ def test_itinerary_formats_walk_and_trip_legs() -> None:
     assert any("Ride S1 from Mid to End" in line for line in lines)
     assert [stop.stop_id for stop in itinerary.stops] == ["A", "B", "C"]
     assert [stop.stop_name for stop in itinerary.stops] == ["Start", "Mid", "End"]
+    assert itinerary.stops[0].stop_lat == 53.551
+    assert itinerary.stops[0].stop_lon == 9.993
     assert len(itinerary.path_segments) == 2
     assert itinerary.path_segments[0].from_stop.stop_id == "A"
     assert itinerary.path_segments[0].to_stop.stop_id == "B"
