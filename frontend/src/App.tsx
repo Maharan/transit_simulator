@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { usePopulationHeatmap } from './features/demographics/usePopulationHeatmap'
+import { usePopulationDots } from './features/demographics/usePopulationDots'
+import type { PopulationBounds } from './features/demographics/types'
 import TransitMap from './features/map/TransitMap'
 import {
   EMPTY_NETWORK_LINE_FEATURES,
@@ -21,6 +24,10 @@ function App() {
   const [origin, setOrigin] = useState<Coordinate | null>(null)
   const [destination, setDestination] = useState<Coordinate | null>(null)
   const [departureTime, setDepartureTime] = useState('09:00')
+  const [populationHeatmapVisible, setPopulationHeatmapVisible] = useState(true)
+  const [populationViewportBounds, setPopulationViewportBounds] =
+    useState<PopulationBounds | null>(null)
+  const populationViewportKeyRef = useRef<string | null>(null)
   const [lineFamilyVisibility, setLineFamilyVisibility] = useState<LineFamilyVisibility>({
     u_bahn: true,
     s_bahn: true,
@@ -43,10 +50,23 @@ function App() {
     errorMessage: networkLinesError,
     loadNetworkLines,
   } = useNetworkLines()
+  const {
+    populationHeatmap,
+    isLoading: populationHeatmapLoading,
+    errorMessage: populationHeatmapError,
+    loadPopulationHeatmap,
+  } = usePopulationHeatmap()
 
   useEffect(() => {
     void loadNetworkLines()
   }, [loadNetworkLines])
+
+  useEffect(() => {
+    if (!populationHeatmapVisible || !populationViewportBounds) {
+      return
+    }
+    void loadPopulationHeatmap(populationViewportBounds, 2020)
+  }, [loadPopulationHeatmap, populationHeatmapVisible, populationViewportBounds])
 
   useEffect(() => {
     if (!origin || !destination) {
@@ -57,6 +77,11 @@ function App() {
 
   const segmentFeatures = useMemo(() => buildSegmentFeatures(route), [route])
   const stopFeatures = useMemo(() => buildStopFeatures(route), [route])
+  const {
+    populationDots: populationDotFeatures,
+    isPreparing: populationDotsPending,
+    errorMessage: populationDotsError,
+  } = usePopulationDots(populationHeatmap, populationHeatmapVisible)
 
   const geometryWarning = useMemo(() => {
     if (!route) {
@@ -123,6 +148,26 @@ function App() {
     }))
   }, [])
 
+  const handlePopulationHeatmapToggle = useCallback(() => {
+    setPopulationHeatmapVisible((current) => !current)
+  }, [])
+
+  const handlePopulationViewportChange = useCallback((bounds: PopulationBounds) => {
+    const nextViewportKey = [
+      bounds.minLat.toFixed(4),
+      bounds.minLon.toFixed(4),
+      bounds.maxLat.toFixed(4),
+      bounds.maxLon.toFixed(4),
+    ].join(':')
+
+    if (populationViewportKeyRef.current === nextViewportKey) {
+      return
+    }
+
+    populationViewportKeyRef.current = nextViewportKey
+    setPopulationViewportBounds(bounds)
+  }, [])
+
   return (
     <div className="app-shell">
       <RouteSidebar
@@ -135,8 +180,13 @@ function App() {
         geometryWarning={geometryWarning}
         networkLinesLoading={networkLinesLoading}
         networkLinesError={networkLinesError}
+        populationHeatmapVisible={populationHeatmapVisible}
+        populationHeatmapLoading={populationHeatmapLoading}
+        populationDotsPending={populationDotsPending}
+        populationHeatmapError={populationHeatmapError ?? populationDotsError}
         lineFamilyVisibility={lineFamilyVisibility}
         onLineFamilyToggle={handleLineFamilyToggle}
+        onPopulationHeatmapToggle={handlePopulationHeatmapToggle}
         onDepartureTimeChange={setDepartureTime}
         onReset={handleReset}
       />
@@ -144,9 +194,12 @@ function App() {
         origin={origin}
         destination={destination}
         networkLineFeatures={visibleNetworkLineFeatures}
+        populationDotFeatures={populationDotFeatures}
+        populationHeatmapVisible={populationHeatmapVisible}
         segmentFeatures={segmentFeatures}
         stopFeatures={stopFeatures}
         onMapClick={handleMapClick}
+        onViewportBoundsChange={handlePopulationViewportChange}
       />
     </div>
   )

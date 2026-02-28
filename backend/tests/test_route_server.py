@@ -326,6 +326,53 @@ def test_network_lines_uses_resolved_feed(monkeypatch) -> None:
     assert captured["feed_id"] == "feed-default-resolved"
 
 
+def test_population_grid_passes_through_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+
+    captured: dict[str, float | int] = {}
+
+    def fake_load_population_grid_geojson(
+        *,
+        session,
+        dataset_year: int,
+        min_lat: float | None = None,
+        min_lon: float | None = None,
+        max_lat: float | None = None,
+        max_lon: float | None = None,
+    ):
+        captured["dataset_year"] = dataset_year
+        captured["min_lat"] = min_lat if min_lat is not None else -1
+        captured["min_lon"] = min_lon if min_lon is not None else -1
+        captured["max_lat"] = max_lat if max_lat is not None else -1
+        captured["max_lon"] = max_lon if max_lon is not None else -1
+        return {"type": "FeatureCollection", "features": []}
+
+    monkeypatch.setattr(
+        route_service_module,
+        "load_population_grid_geojson",
+        fake_load_population_grid_geojson,
+    )
+
+    payload = service.population_grid(
+        dataset_year=2020,
+        min_lat=53.4,
+        min_lon=9.7,
+        max_lat=53.7,
+        max_lon=10.2,
+    )
+
+    assert payload["type"] == "FeatureCollection"
+    assert captured == {
+        "dataset_year": 2020,
+        "min_lat": 53.4,
+        "min_lon": 9.7,
+        "max_lat": 53.7,
+        "max_lon": 10.2,
+    }
+
+
 def test_fastapi_health_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
     args = route_server._build_parser().parse_args([])
@@ -517,6 +564,58 @@ def test_fastapi_network_lines_endpoint_returns_typed_payload(monkeypatch) -> No
     assert payload["type"] == "FeatureCollection"
     assert payload["features"][0]["properties"]["line_id"] == "U1"
     assert payload["features"][0]["properties"]["line_family"] == "u_bahn"
+
+
+def test_fastapi_population_grid_endpoint_returns_typed_payload(monkeypatch) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+    monkeypatch.setattr(
+        service,
+        "population_grid",
+        lambda **_kwargs: {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "population_estimate": 125.0,
+                    },
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [9.99, 53.55],
+                                [10.0, 53.55],
+                                [10.0, 53.56],
+                                [9.99, 53.56],
+                                [9.99, 53.55],
+                            ]
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+    app = fastapi_app_module.build_fastapi_app(service)
+    client = TestClient(app)
+
+    response = client.get(
+        "/population-grid",
+        params={
+            "dataset_year": 2020,
+            "min_lat": 53.4,
+            "min_lon": 9.7,
+            "max_lat": 53.7,
+            "max_lon": 10.2,
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["type"] == "FeatureCollection"
+    assert payload["features"][0]["properties"]["population_estimate"] == 125.0
+    assert payload["features"][0]["geometry"]["coordinates"][0][0] == [9.99, 53.55]
 
 
 def test_fastapi_reload_graph_endpoint(monkeypatch) -> None:

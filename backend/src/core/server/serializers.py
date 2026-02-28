@@ -134,6 +134,26 @@ class NetworkLineFeatureCollectionResponse(BaseModel):
     features: list[NetworkLineFeatureResponse]
 
 
+class PopulationGridGeometryResponse(BaseModel):
+    type: Literal["Polygon"]
+    coordinates: list[list[list[float]]]
+
+
+class PopulationGridPropertiesResponse(BaseModel):
+    population_estimate: float
+
+
+class PopulationGridFeatureResponse(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    properties: PopulationGridPropertiesResponse
+    geometry: PopulationGridGeometryResponse
+
+
+class PopulationGridFeatureCollectionResponse(BaseModel):
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[PopulationGridFeatureResponse]
+
+
 class RouteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

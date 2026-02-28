@@ -3,16 +3,14 @@ import maplibregl, { type GeoJSONSource, type LngLatBoundsLike } from 'maplibre-
 import type { FeatureCollection, LineString, Point } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
-import { EMPTY_NETWORK_LINE_FEATURES } from '../network/types'
-import { EMPTY_SEGMENTS, EMPTY_STOPS } from '../routing/geojson'
+import {
+  EMPTY_POPULATION_DOTS,
+  type PopulationBounds,
+  type PopulationDotFeatureCollection,
+} from '../demographics/types'
+import { HAMBURG_CENTER, HAMBURG_MAP_BOUNDS } from './constants'
 import type { Coordinate, SegmentProperties, StopProperties } from '../routing/types'
 import type { NetworkLineFeatureCollection } from '../network/types'
-
-const HAMBURG_CENTER: [number, number] = [9.9937, 53.5511]
-const HAMBURG_BOUNDS: LngLatBoundsLike = [
-  [8.0, 52.8],
-  [10.8, 54.2],
-]
 
 const ROUTE_SOURCE_ID = 'route-segments-source'
 const ROUTE_CASING_LAYER_ID = 'route-segments-casing-layer'
@@ -25,6 +23,11 @@ const NETWORK_SOURCE_ID = 'network-lines-source'
 const NETWORK_LAYER_ID = 'network-lines-layer'
 const NETWORK_HALO_LAYER_ID = 'network-lines-halo-layer'
 const NETWORK_HOVER_LAYER_ID = 'network-lines-hover-layer'
+const POPULATION_SOURCE_ID = 'population-grid-source'
+const POPULATION_LAYER_ID = 'population-grid-dot-layer'
+const DEFAULT_NETWORK_LINE_OPACITY = 0.5
+const ACTIVE_ROUTE_LINE_OPACITY = 1
+const POPULATION_DOT_OPACITY = 0.72
 
 type HoverTag = {
   x: number
@@ -49,23 +52,35 @@ type TransitMapProps = {
   origin: Coordinate | null
   destination: Coordinate | null
   networkLineFeatures: NetworkLineFeatureCollection
+  populationDotFeatures: PopulationDotFeatureCollection
+  populationHeatmapVisible: boolean
   segmentFeatures: FeatureCollection<LineString, SegmentProperties>
   stopFeatures: FeatureCollection<Point, StopProperties>
   onMapClick: (coord: Coordinate) => void
+  onViewportBoundsChange: (bounds: PopulationBounds) => void
 }
 
 function TransitMap({
   origin,
   destination,
   networkLineFeatures,
+  populationDotFeatures,
+  populationHeatmapVisible,
   segmentFeatures,
   stopFeatures,
   onMapClick,
+  onViewportBoundsChange,
 }: TransitMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const mapReadyRef = useRef(false)
   const onMapClickRef = useRef(onMapClick)
+  const onViewportBoundsChangeRef = useRef(onViewportBoundsChange)
+  const networkLineFeaturesRef = useRef(networkLineFeatures)
+  const populationDotFeaturesRef = useRef(populationDotFeatures)
+  const populationHeatmapVisibleRef = useRef(populationHeatmapVisible)
+  const segmentFeaturesRef = useRef(segmentFeatures)
+  const stopFeaturesRef = useRef(stopFeatures)
 
   const originMarkerRef = useRef<maplibregl.Marker | null>(null)
   const destinationMarkerRef = useRef<maplibregl.Marker | null>(null)
@@ -78,6 +93,30 @@ function TransitMap({
   }, [onMapClick])
 
   useEffect(() => {
+    onViewportBoundsChangeRef.current = onViewportBoundsChange
+  }, [onViewportBoundsChange])
+
+  useEffect(() => {
+    networkLineFeaturesRef.current = networkLineFeatures
+  }, [networkLineFeatures])
+
+  useEffect(() => {
+    populationDotFeaturesRef.current = populationDotFeatures
+  }, [populationDotFeatures])
+
+  useEffect(() => {
+    populationHeatmapVisibleRef.current = populationHeatmapVisible
+  }, [populationHeatmapVisible])
+
+  useEffect(() => {
+    segmentFeaturesRef.current = segmentFeatures
+  }, [segmentFeatures])
+
+  useEffect(() => {
+    stopFeaturesRef.current = stopFeatures
+  }, [stopFeatures])
+
+  useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return
     }
@@ -86,7 +125,7 @@ function TransitMap({
       container: mapContainerRef.current,
       center: HAMBURG_CENTER,
       zoom: 10.7,
-      maxBounds: HAMBURG_BOUNDS,
+      maxBounds: HAMBURG_MAP_BOUNDS as LngLatBoundsLike,
       style: {
         version: 8,
         sources: {
@@ -112,6 +151,16 @@ function TransitMap({
 
     const handleClick = (event: maplibregl.MapMouseEvent) => {
       onMapClickRef.current({ lat: event.lngLat.lat, lon: event.lngLat.lng })
+    }
+
+    const notifyViewportBounds = () => {
+      const bounds = map.getBounds()
+      onViewportBoundsChangeRef.current({
+        minLat: bounds.getSouth(),
+        minLon: bounds.getWest(),
+        maxLat: bounds.getNorth(),
+        maxLon: bounds.getEast(),
+      })
     }
 
     const handleRouteMouseMove = (
@@ -175,13 +224,62 @@ function TransitMap({
     }
 
     map.on('click', handleClick)
+    map.on('moveend', notifyViewportBounds)
     map.on('load', () => {
       mapReadyRef.current = true
+      notifyViewportBounds()
 
       if (!map.getSource(NETWORK_SOURCE_ID)) {
         map.addSource(NETWORK_SOURCE_ID, {
           type: 'geojson',
-          data: EMPTY_NETWORK_LINE_FEATURES,
+          data: networkLineFeaturesRef.current,
+        })
+      }
+
+      if (!map.getSource(POPULATION_SOURCE_ID)) {
+        map.addSource(POPULATION_SOURCE_ID, {
+          type: 'geojson',
+          data: populationDotFeaturesRef.current,
+        })
+      }
+
+      if (!map.getLayer(POPULATION_LAYER_ID)) {
+        map.addLayer({
+          id: POPULATION_LAYER_ID,
+          type: 'circle',
+          source: POPULATION_SOURCE_ID,
+          layout: {
+            visibility: populationHeatmapVisibleRef.current ? 'visible' : 'none',
+          },
+          paint: {
+            'circle-color': '#5b21b6',
+            'circle-opacity': POPULATION_DOT_OPACITY,
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              9,
+              1,
+              11,
+              1.5,
+              13,
+              2.1,
+              15,
+              2.8,
+            ],
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              9,
+              0,
+              12,
+              0.2,
+              15,
+              0.45,
+            ],
+          },
         })
       }
 
@@ -208,7 +306,7 @@ function TransitMap({
           paint: {
             'line-color': ['get', 'color'],
             'line-width': 2.75,
-            'line-opacity': 0.58,
+            'line-opacity': DEFAULT_NETWORK_LINE_OPACITY,
             'line-offset': ['coalesce', ['get', 'offset_px'], 0],
           },
         })
@@ -233,7 +331,7 @@ function TransitMap({
       if (!map.getSource(ROUTE_SOURCE_ID)) {
         map.addSource(ROUTE_SOURCE_ID, {
           type: 'geojson',
-          data: EMPTY_SEGMENTS,
+          data: segmentFeaturesRef.current,
         })
       }
 
@@ -249,7 +347,7 @@ function TransitMap({
           paint: {
             'line-color': '#ffffff',
             'line-width': 10,
-            'line-opacity': 0.94,
+            'line-opacity': ACTIVE_ROUTE_LINE_OPACITY,
           },
         })
       }
@@ -267,7 +365,7 @@ function TransitMap({
           paint: {
             'line-color': ['get', 'color'],
             'line-width': 5.5,
-            'line-opacity': 0.98,
+            'line-opacity': ACTIVE_ROUTE_LINE_OPACITY,
           },
         })
       }
@@ -285,7 +383,7 @@ function TransitMap({
           paint: {
             'line-color': ['get', 'color'],
             'line-width': 5.5,
-            'line-opacity': 0.98,
+            'line-opacity': ACTIVE_ROUTE_LINE_OPACITY,
             'line-dasharray': [0.8, 1.25],
           },
         })
@@ -304,7 +402,7 @@ function TransitMap({
           paint: {
             'line-color': ['get', 'color'],
             'line-width': 9.5,
-            'line-opacity': 0.95,
+            'line-opacity': ACTIVE_ROUTE_LINE_OPACITY,
             'line-blur': 0.6,
           },
         })
@@ -313,7 +411,7 @@ function TransitMap({
       if (!map.getSource(STOPS_SOURCE_ID)) {
         map.addSource(STOPS_SOURCE_ID, {
           type: 'geojson',
-          data: EMPTY_STOPS,
+          data: stopFeaturesRef.current,
         })
       }
 
@@ -373,6 +471,7 @@ function TransitMap({
         map.off('mouseleave', ROUTE_WALK_LAYER_ID, handleRouteMouseLeave)
       }
       map.off('click', handleClick)
+      map.off('moveend', notifyViewportBounds)
       map.remove()
       mapRef.current = null
     }
@@ -411,13 +510,43 @@ function TransitMap({
 
     const networkSource = map.getSource(NETWORK_SOURCE_ID) as GeoJSONSource | undefined
     networkSource?.setData(networkLineFeatures)
+  }, [networkLineFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current) {
+      return
+    }
+
+    const populationSource = map.getSource(POPULATION_SOURCE_ID) as GeoJSONSource | undefined
+    populationSource?.setData(populationDotFeatures ?? EMPTY_POPULATION_DOTS)
+  }, [populationDotFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current) {
+      return
+    }
 
     const routeSource = map.getSource(ROUTE_SOURCE_ID) as GeoJSONSource | undefined
     routeSource?.setData(segmentFeatures)
+  }, [segmentFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current) {
+      return
+    }
 
     const stopsSource = map.getSource(STOPS_SOURCE_ID) as GeoJSONSource | undefined
     stopsSource?.setData(stopFeatures)
+  }, [stopFeatures])
 
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current) {
+      return
+    }
     if (segmentFeatures.features.length === 0) {
       return
     }
@@ -429,7 +558,19 @@ function TransitMap({
       }
     }
     map.fitBounds(bounds, { padding: 64, duration: 500, maxZoom: 14 })
-  }, [networkLineFeatures, segmentFeatures, stopFeatures])
+  }, [segmentFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReadyRef.current || !map.getLayer(POPULATION_LAYER_ID)) {
+      return
+    }
+    map.setLayoutProperty(
+      POPULATION_LAYER_ID,
+      'visibility',
+      populationHeatmapVisible ? 'visible' : 'none'
+    )
+  }, [populationHeatmapVisible])
 
   useEffect(() => {
     const map = mapRef.current

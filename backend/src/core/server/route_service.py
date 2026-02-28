@@ -14,6 +14,7 @@ from core.routing.route_planner import (
 from infra import Database
 
 from .network_lines import load_network_lines_geojson
+from .population_grid import load_population_grid_geojson
 from .segment_shapes import attach_path_segment_geometries
 from .serializers import RouteRequest as RoutePayload
 
@@ -106,6 +107,28 @@ class RouteService:
         try:
             resolved_feed_id = resolve_feed_id(session, feed_id or self._args.feed_id)
             return load_network_lines_geojson(session=session, feed_id=resolved_feed_id)
+        finally:
+            session.close()
+
+    def population_grid(
+        self,
+        *,
+        dataset_year: int = 2020,
+        min_lat: float | None = None,
+        min_lon: float | None = None,
+        max_lat: float | None = None,
+        max_lon: float | None = None,
+    ) -> dict[str, Any]:
+        session = self._database.session()
+        try:
+            return load_population_grid_geojson(
+                session=session,
+                dataset_year=dataset_year,
+                min_lat=min_lat,
+                min_lon=min_lon,
+                max_lat=max_lat,
+                max_lon=max_lon,
+            )
         finally:
             session.close()
 

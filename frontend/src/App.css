@@ -184,6 +184,10 @@
   background: #111111;
 }
 
+.layer-swatch.demographics {
+  background: linear-gradient(135deg, #fef08a 0%, #f59e0b 45%, #dc2626 100%);
+}
+
 .inline-note {
   margin: 0.55rem 0 0;
   font-size: 0.9rem;

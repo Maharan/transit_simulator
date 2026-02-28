@@ -12,8 +12,13 @@ type RouteSidebarProps = {
   geometryWarning: string | null
   networkLinesLoading: boolean
   networkLinesError: string | null
+  populationHeatmapVisible: boolean
+  populationHeatmapLoading: boolean
+  populationDotsPending: boolean
+  populationHeatmapError: string | null
   lineFamilyVisibility: LineFamilyVisibility
   onLineFamilyToggle: (family: LineFamily) => void
+  onPopulationHeatmapToggle: () => void
   onDepartureTimeChange: (value: string) => void
   onReset: () => void
 }
@@ -35,8 +40,13 @@ function RouteSidebar({
   geometryWarning,
   networkLinesLoading,
   networkLinesError,
+  populationHeatmapVisible,
+  populationHeatmapLoading,
+  populationDotsPending,
+  populationHeatmapError,
   lineFamilyVisibility,
   onLineFamilyToggle,
+  onPopulationHeatmapToggle,
   onDepartureTimeChange,
   onReset,
 }: RouteSidebarProps) {
@@ -92,6 +102,15 @@ function RouteSidebar({
           <label className="toggle-item">
             <input
               type="checkbox"
+              checked={populationHeatmapVisible}
+              onChange={onPopulationHeatmapToggle}
+            />
+            <span className="layer-swatch demographics" aria-hidden="true" />
+            <span>Population dots (2020)</span>
+          </label>
+          <label className="toggle-item">
+            <input
+              type="checkbox"
               checked={lineFamilyVisibility.u_bahn}
               onChange={() => onLineFamilyToggle('u_bahn')}
             />
@@ -126,6 +145,13 @@ function RouteSidebar({
             <span>Regional (RE/RB)</span>
           </label>
         </div>
+        {populationHeatmapLoading && <p className="inline-note">Loading visible population tiles...</p>}
+        {populationDotsPending && (
+          <p className="inline-note">Preparing population dots...</p>
+        )}
+        {populationHeatmapError && (
+          <p className="inline-note error">{populationHeatmapError}</p>
+        )}
         {networkLinesLoading && <p className="inline-note">Loading network lines...</p>}
         {networkLinesError && <p className="inline-note error">{networkLinesError}</p>}
       </section>
