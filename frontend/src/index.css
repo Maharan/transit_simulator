@@ -1,25 +1,159 @@
 :root {
-  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
-  line-height: 1.4;
-  font-weight: 400;
-  color: #0f172a;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  font-family:
+    'Segoe UI',
+    'Helvetica Neue',
+    Helvetica,
+    Arial,
+    sans-serif;
+  color: #111827;
+  background: #f3f4f6;
 }
 
-*,
-*::before,
-*::after {
+* {
   box-sizing: border-box;
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
-  min-width: 320px;
+  width: 100%;
+  height: 100%;
 }
 
-#root {
+body {
   min-height: 100vh;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  width: 100%;
+  height: 100%;
+}
+
+.panel {
+  padding: 1rem;
+  border-right: 1px solid #e5e7eb;
+  background: #ffffff;
+  overflow: auto;
+}
+
+.panel h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.panel-subtitle {
+  margin: 0.4rem 0 1rem;
+  color: #4b5563;
+  font-size: 0.95rem;
+}
+
+.route-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.route-form fieldset {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.route-form legend {
+  padding: 0 0.3rem;
+  font-weight: 600;
+}
+
+.route-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.route-form input {
+  border: 1px solid #cbd5e1;
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.95rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.actions button {
+  border: 1px solid #1f2937;
+  background: #1f2937;
+  color: #ffffff;
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+}
+
+.actions button[type='button'] {
+  background: #ffffff;
+  color: #111827;
+}
+
+.actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.map-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem;
+  min-height: 0;
+}
+
+.map-status-card {
+  border: 1px solid #d1d5db;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  padding: 0.8rem 0.9rem;
+  color: #1f2937;
+}
+
+.map-status-card p {
+  margin: 0.25rem 0;
+}
+
+.map-status-card ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.map-status-card li {
+  margin: 0.2rem 0;
+}
+
+.status-title {
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .panel {
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .map-shell {
+    min-height: 360px;
+  }
 }

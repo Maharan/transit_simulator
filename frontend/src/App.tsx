@@ -1,205 +1,91 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { usePopulationHeatmap } from './features/demographics/usePopulationHeatmap'
-import { usePopulationDots } from './features/demographics/usePopulationDots'
-import type { PopulationBounds } from './features/demographics/types'
-import TransitMap from './features/map/TransitMap'
+import { MapShell } from './map/components/mapShell'
+import { Sidebar } from './map/components/sidebar'
+import { useRouteRequest } from './map/services/useRouteRequest'
+import { isValidNumber } from './map/services/validators'
 import {
-  EMPTY_NETWORK_LINE_FEATURES,
-  type LineFamily,
-  type LineFamilyVisibility,
-} from './features/network/types'
-import { useNetworkLines } from './features/network/useNetworkLines'
-import {
-  buildSegmentFeatures,
-  buildStopFeatures,
-  hasAnyMissingSegmentCoordinates,
-} from './features/routing/geojson'
-import RouteSidebar from './features/routing/RouteSidebar'
-import type { Coordinate } from './features/routing/types'
-import { useRouterRoute } from './features/routing/useRouterRoute'
-import './App.css'
+  type CoordinateInput,
+  type Endpoint,
+  type CoordinateField,
+} from './map/types/coordinates.types.ts'
+
 
 function App() {
-  const [origin, setOrigin] = useState<Coordinate | null>(null)
-  const [destination, setDestination] = useState<Coordinate | null>(null)
-  const [departureTime, setDepartureTime] = useState('09:00')
-  const [populationHeatmapVisible, setPopulationHeatmapVisible] = useState(true)
-  const [populationViewportBounds, setPopulationViewportBounds] =
-    useState<PopulationBounds | null>(null)
-  const populationViewportKeyRef = useRef<string | null>(null)
-  const [lineFamilyVisibility, setLineFamilyVisibility] = useState<LineFamilyVisibility>({
-    u_bahn: true,
-    s_bahn: true,
-    a_line: true,
-    regional: true,
-  })
+  // Form state
+  const [from, setFrom] = useState<CoordinateInput>({ lat: '', lon: '' })
+  const [to, setTo] = useState<CoordinateInput>({ lat: '', lon: '' })
+  const [departTime, setDepartTime] = useState('')
 
+  // Route request state
   const {
-    route,
     isLoading,
     errorMessage,
-    requestRoute,
-    cancelRequest,
-    clearRoute,
-    clearError,
-  } = useRouterRoute()
-  const {
-    networkLines,
-    isLoading: networkLinesLoading,
-    errorMessage: networkLinesError,
-    loadNetworkLines,
-  } = useNetworkLines()
-  const {
-    populationHeatmap,
-    isLoading: populationHeatmapLoading,
-    errorMessage: populationHeatmapError,
-    loadPopulationHeatmap,
-  } = usePopulationHeatmap()
+    routeResult,
+    submitRoute,
+    resetRouteRequest,
+  } = useRouteRequest()
 
-  useEffect(() => {
-    void loadNetworkLines()
-  }, [loadNetworkLines])
+  const fromValid = useMemo(() => {
+    return isValidNumber(from.lat) && isValidNumber(from.lon)
+  }, [from])
 
-  useEffect(() => {
-    if (!populationHeatmapVisible || !populationViewportBounds) {
+  const toValid = useMemo(() => {
+    return isValidNumber(to.lat) && isValidNumber(to.lon)
+  }, [to])
+
+  const canSubmit = fromValid && toValid
+
+  function handleCoordinateChange(
+    endpoint: Endpoint,
+    field: CoordinateField,
+    value: string,
+  ): void {
+    if (endpoint === 'from') {
+      setFrom((prev) => ({ ...prev, [field]: value }))
       return
     }
-    void loadPopulationHeatmap(populationViewportBounds, 2020)
-  }, [loadPopulationHeatmap, populationHeatmapVisible, populationViewportBounds])
+    setTo((prev) => ({ ...prev, [field]: value }))
+  }
 
-  useEffect(() => {
-    if (!origin || !destination) {
+  function handleReset(): void {
+    setFrom({ lat: '', lon: '' })
+    setTo({ lat: '', lon: '' })
+    setDepartTime('')
+    resetRouteRequest()
+  }
+
+  function handleSubmit(): void {
+    if (!canSubmit) {
       return
     }
-    void requestRoute(origin, destination, departureTime)
-  }, [origin, destination, departureTime, requestRoute])
-
-  const segmentFeatures = useMemo(() => buildSegmentFeatures(route), [route])
-  const stopFeatures = useMemo(() => buildStopFeatures(route), [route])
-  const {
-    populationDots: populationDotFeatures,
-    isPreparing: populationDotsPending,
-    errorMessage: populationDotsError,
-  } = usePopulationDots(populationHeatmap, populationHeatmapVisible)
-
-  const geometryWarning = useMemo(() => {
-    if (!route) {
-      return null
+    const payload = {
+      from_lat: Number(from.lat),
+      from_lon: Number(from.lon),
+      to_lat: Number(to.lat),
+      to_lon: Number(to.lon),
+      depart_time: departTime.trim() || undefined,
     }
-    if (!hasAnyMissingSegmentCoordinates(route)) {
-      return null
-    }
-    return (
-      'Route was returned, but stop coordinates are missing in the API response. ' +
-      'Restart the router container so it serves the latest backend schema.'
-    )
-  }, [route])
-
-  const visibleNetworkLineFeatures = useMemo(() => {
-    if (!networkLines) {
-      return EMPTY_NETWORK_LINE_FEATURES
-    }
-    const visibleFeatures = networkLines.features.filter((feature) => {
-      const family = feature.properties?.line_family
-      if (
-        family !== 'u_bahn' &&
-        family !== 's_bahn' &&
-        family !== 'a_line' &&
-        family !== 'regional'
-      ) {
-        return false
-      }
-      return lineFamilyVisibility[family]
-    })
-    return {
-      type: 'FeatureCollection' as const,
-      features: visibleFeatures,
-    }
-  }, [lineFamilyVisibility, networkLines])
-
-  const handleMapClick = useCallback(
-    (point: Coordinate) => {
-      clearError()
-      clearRoute()
-
-      if (!origin || destination) {
-        setOrigin(point)
-        setDestination(null)
-        return
-      }
-      setDestination(point)
-    },
-    [clearError, clearRoute, destination, origin]
-  )
-
-  const handleReset = useCallback(() => {
-    cancelRequest()
-    clearError()
-    clearRoute()
-    setOrigin(null)
-    setDestination(null)
-  }, [cancelRequest, clearError, clearRoute])
-
-  const handleLineFamilyToggle = useCallback((family: LineFamily) => {
-    setLineFamilyVisibility((current) => ({
-      ...current,
-      [family]: !current[family],
-    }))
-  }, [])
-
-  const handlePopulationHeatmapToggle = useCallback(() => {
-    setPopulationHeatmapVisible((current) => !current)
-  }, [])
-
-  const handlePopulationViewportChange = useCallback((bounds: PopulationBounds) => {
-    const nextViewportKey = [
-      bounds.minLat.toFixed(4),
-      bounds.minLon.toFixed(4),
-      bounds.maxLat.toFixed(4),
-      bounds.maxLon.toFixed(4),
-    ].join(':')
-
-    if (populationViewportKeyRef.current === nextViewportKey) {
-      return
-    }
-
-    populationViewportKeyRef.current = nextViewportKey
-    setPopulationViewportBounds(bounds)
-  }, [])
+    void submitRoute(payload)
+  }
 
   return (
-    <div className="app-shell">
-      <RouteSidebar
-        origin={origin}
-        destination={destination}
-        departureTime={departureTime}
-        route={route}
+    <div className="app">
+      <Sidebar
+        from={from}
+        to={to}
+        departTime={departTime}
+        canSubmit={canSubmit}
+        onCoordinateChange={handleCoordinateChange}
+        onDepartTimeChange={setDepartTime}
+        onSubmit={handleSubmit}
+        onClear={handleReset}
+      />
+
+      <MapShell
         isLoading={isLoading}
         errorMessage={errorMessage}
-        geometryWarning={geometryWarning}
-        networkLinesLoading={networkLinesLoading}
-        networkLinesError={networkLinesError}
-        populationHeatmapVisible={populationHeatmapVisible}
-        populationHeatmapLoading={populationHeatmapLoading}
-        populationDotsPending={populationDotsPending}
-        populationHeatmapError={populationHeatmapError ?? populationDotsError}
-        lineFamilyVisibility={lineFamilyVisibility}
-        onLineFamilyToggle={handleLineFamilyToggle}
-        onPopulationHeatmapToggle={handlePopulationHeatmapToggle}
-        onDepartureTimeChange={setDepartureTime}
-        onReset={handleReset}
-      />
-      <TransitMap
-        origin={origin}
-        destination={destination}
-        networkLineFeatures={visibleNetworkLineFeatures}
-        populationDotFeatures={populationDotFeatures}
-        populationHeatmapVisible={populationHeatmapVisible}
-        segmentFeatures={segmentFeatures}
-        stopFeatures={stopFeatures}
-        onMapClick={handleMapClick}
-        onViewportBoundsChange={handlePopulationViewportChange}
+        routeResult={routeResult}
       />
     </div>
   )
