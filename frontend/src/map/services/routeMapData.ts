@@ -2,22 +2,33 @@ import type { RouteResponse } from '../types/route.types'
 
 type LngLat = [number, number]
 
-type FeatureCollection = {
+type LineGeometry = {
+  type: 'LineString'
+  coordinates: LngLat[]
+}
+
+type PointGeometry = {
+  type: 'Point'
+  coordinates: LngLat
+}
+
+type Geometry = LineGeometry | PointGeometry
+
+type Feature<TGeometry extends Geometry = Geometry> = {
+  type: 'Feature'
+  properties: Record<string, string>
+  geometry: TGeometry
+}
+
+type FeatureCollection<TGeometry extends Geometry = Geometry> = {
   type: 'FeatureCollection'
-  features: Array<{
-    type: 'Feature'
-    properties: Record<string, string>
-    geometry: {
-      type: 'LineString' | 'Point'
-      coordinates: LngLat[] | LngLat
-    }
-  }>
+  features: Feature<TGeometry>[]
 }
 
 type RouteMapData = {
-  lineCollection: FeatureCollection
-  stopCollection: FeatureCollection
-  endpointCollection: FeatureCollection
+  lineCollection: FeatureCollection<LineGeometry>
+  stopCollection: FeatureCollection<PointGeometry>
+  endpointCollection: FeatureCollection<PointGeometry>
   bounds: [LngLat, LngLat] | null
 }
 
@@ -50,43 +61,66 @@ function stopToPoint(stop: {
   return [stop.stop_lon, stop.stop_lat]
 }
 
-function computeBounds(points: LngLat[]): [LngLat, LngLat] | null {
-  if (points.length === 0) {
+type BoundsTracker = {
+  hasPoint: boolean
+  minLon: number
+  maxLon: number
+  minLat: number
+  maxLat: number
+}
+
+function createBoundsTracker(): BoundsTracker {
+  return {
+    hasPoint: false,
+    minLon: 0,
+    maxLon: 0,
+    minLat: 0,
+    maxLat: 0,
+  }
+}
+
+function extendBounds(tracker: BoundsTracker, point: LngLat): void {
+  const [lon, lat] = point
+  if (!tracker.hasPoint) {
+    tracker.hasPoint = true
+    tracker.minLon = lon
+    tracker.maxLon = lon
+    tracker.minLat = lat
+    tracker.maxLat = lat
+    return
+  }
+
+  tracker.minLon = Math.min(tracker.minLon, lon)
+  tracker.maxLon = Math.max(tracker.maxLon, lon)
+  tracker.minLat = Math.min(tracker.minLat, lat)
+  tracker.maxLat = Math.max(tracker.maxLat, lat)
+}
+
+function finalizeBounds(tracker: BoundsTracker): [LngLat, LngLat] | null {
+  if (!tracker.hasPoint) {
     return null
   }
 
-  let minLon = points[0][0]
-  let maxLon = points[0][0]
-  let minLat = points[0][1]
-  let maxLat = points[0][1]
-
-  for (const [lon, lat] of points) {
-    minLon = Math.min(minLon, lon)
-    maxLon = Math.max(maxLon, lon)
-    minLat = Math.min(minLat, lat)
-    maxLat = Math.max(maxLat, lat)
-  }
-
   return [
-    [minLon, minLat],
-    [maxLon, maxLat],
+    [tracker.minLon, tracker.minLat],
+    [tracker.maxLon, tracker.maxLat],
   ]
 }
 
 function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
-  const lineCollection: FeatureCollection = {
+  const lineCollection: FeatureCollection<LineGeometry> = {
     type: 'FeatureCollection',
     features: [],
   }
-  const stopCollection: FeatureCollection = {
+  const stopCollection: FeatureCollection<PointGeometry> = {
     type: 'FeatureCollection',
     features: [],
   }
-  const endpointCollection: FeatureCollection = {
+  const endpointCollection: FeatureCollection<PointGeometry> = {
     type: 'FeatureCollection',
     features: [],
   }
-  const boundsPoints: LngLat[] = []
+  const boundsTracker = createBoundsTracker()
 
   if (!routeResult) {
     return {
@@ -124,7 +158,9 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
         coordinates,
       },
     })
-    boundsPoints.push(...coordinates)
+    for (const coordinate of coordinates) {
+      extendBounds(boundsTracker, coordinate)
+    }
   }
 
   for (const stop of routeResult.itinerary.stops) {
@@ -143,7 +179,7 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
         coordinates: point,
       },
     })
-    boundsPoints.push(point)
+    extendBounds(boundsTracker, point)
   }
 
   const firstStop = routeResult.itinerary.stops[0]
@@ -182,7 +218,7 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
     lineCollection,
     stopCollection,
     endpointCollection,
-    bounds: computeBounds(boundsPoints),
+    bounds: finalizeBounds(boundsTracker),
   }
 }
 
