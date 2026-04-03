@@ -16,6 +16,8 @@ function App() {
   const [from, setFrom] = useState<CoordinateInput>({ lat: '', lon: '' })
   const [to, setTo] = useState<CoordinateInput>({ lat: '', lon: '' })
   const [departTime, setDepartTime] = useState('')
+  const [showPopulationHeatmap, setShowPopulationHeatmap] = useState(false)
+  const [showRapidTransitLines, setShowRapidTransitLines] = useState(true)
 
   // Route request state
   const {
@@ -75,9 +77,13 @@ function App() {
         from={from}
         to={to}
         departTime={departTime}
+        showPopulationHeatmap={showPopulationHeatmap}
+        showRapidTransitLines={showRapidTransitLines}
         canSubmit={canSubmit}
         onCoordinateChange={handleCoordinateChange}
         onDepartTimeChange={setDepartTime}
+        onPopulationHeatmapToggle={setShowPopulationHeatmap}
+        onRapidTransitLinesToggle={setShowRapidTransitLines}
         onSubmit={handleSubmit}
         onClear={handleReset}
       />
@@ -86,6 +92,8 @@ function App() {
         isLoading={isLoading}
         errorMessage={errorMessage}
         routeResult={routeResult}
+        showPopulationHeatmap={showPopulationHeatmap}
+        showRapidTransitLines={showRapidTransitLines}
       />
     </div>
   )

@@ -5,6 +5,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from .route_service import RouteService
 from .serializers import (
+    FloorSpaceDensityFeatureCollectionResponse,
     HealthResponse,
     NetworkLineFeatureCollectionResponse,
     PopulationGridFeatureCollectionResponse,
@@ -74,6 +75,36 @@ def build_fastapi_app(service: RouteService) -> FastAPI:
             return PopulationGridFeatureCollectionResponse.model_validate(
                 service.population_grid(
                     dataset_year=dataset_year,
+                    min_lat=min_lat,
+                    min_lon=min_lon,
+                    max_lat=max_lat,
+                    max_lon=max_lon,
+                )
+            )
+        except SystemExit as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive guardrail.
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get(
+        "/floor-space-density",
+        response_model=FloorSpaceDensityFeatureCollectionResponse,
+    )
+    def floor_space_density(
+        dataset_release: str = "2023-04-01",
+        grid_resolution_m: int = 100,
+        min_lat: float | None = None,
+        min_lon: float | None = None,
+        max_lat: float | None = None,
+        max_lon: float | None = None,
+    ) -> FloorSpaceDensityFeatureCollectionResponse:
+        try:
+            return FloorSpaceDensityFeatureCollectionResponse.model_validate(
+                service.floor_space_density(
+                    dataset_release=dataset_release,
+                    grid_resolution_m=grid_resolution_m,
                     min_lat=min_lat,
                     min_lon=min_lon,
                     max_lat=max_lat,

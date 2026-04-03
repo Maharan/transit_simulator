@@ -154,6 +154,30 @@ class PopulationGridFeatureCollectionResponse(BaseModel):
     features: list[PopulationGridFeatureResponse]
 
 
+class FloorSpaceDensityGeometryResponse(BaseModel):
+    type: Literal["Point"]
+    coordinates: list[float]
+
+
+class FloorSpaceDensityPropertiesResponse(BaseModel):
+    building_count: int
+    floor_space_m2: float
+    floor_space_density_sqkm: float
+    population_estimate: float
+    population_density_sqkm: float
+
+
+class FloorSpaceDensityFeatureResponse(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    properties: FloorSpaceDensityPropertiesResponse
+    geometry: FloorSpaceDensityGeometryResponse
+
+
+class FloorSpaceDensityFeatureCollectionResponse(BaseModel):
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[FloorSpaceDensityFeatureResponse]
+
+
 class RouteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

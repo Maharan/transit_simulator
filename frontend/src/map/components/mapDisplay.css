@@ -15,8 +15,6 @@
 
 .map-legend {
   position: absolute;
-  left: 0.75rem;
-  bottom: 0.75rem;
   z-index: 2;
   display: grid;
   grid-template-columns: auto auto;
@@ -31,12 +29,167 @@
   pointer-events: none;
 }
 
+.map-legend--routes {
+  left: 0.75rem;
+  bottom: 0.75rem;
+}
+
 .legend-line {
   display: inline-block;
   width: 22px;
   height: 0;
   border-top: 3px solid;
   border-radius: 999px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.legend-swatch.rapid-transit {
+  background: linear-gradient(
+    90deg,
+    #005aae 0%,
+    #005aae 20%,
+    #d62828 20%,
+    #d62828 40%,
+    #2e9e45 40%,
+    #2e9e45 60%,
+    #7e57c2 60%,
+    #7e57c2 80%,
+    #f28e2b 80%,
+    #f28e2b 100%
+  );
+  border: 1px solid rgb(148 163 184 / 45%);
+}
+
+.legend-swatch.heatmap {
+  background: linear-gradient(90deg, #ffffff 0%, #f8fbff 4%, #e0f2fe 10%, #93c5fd 22%, #60a5fa 34%, #2563eb 46%, #22c55e 57%, #84cc16 66%, #facc15 75%, #fb923c 86%, #f97316 92%, #ef4444 97%, #b91c1c 100%);
+}
+
+.map-surface-legend {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 2;
+  width: min(300px, calc(100% - 1.5rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid #cbd5e1;
+  background: rgb(248 250 252 / 96%);
+  color: #0f172a;
+  pointer-events: none;
+}
+
+.surface-legend-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.surface-legend-subtitle {
+  color: #475569;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.surface-legend-gradient {
+  height: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgb(148 163 184 / 45%);
+}
+
+.surface-legend-ticks {
+  position: relative;
+  height: 3.2rem;
+}
+
+.surface-legend-tick {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 0.14rem;
+}
+
+.surface-legend-tick--start {
+  transform: translateX(0);
+  align-items: flex-start;
+}
+
+.surface-legend-tick--center {
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+.surface-legend-tick--end {
+  transform: translateX(-100%);
+  align-items: flex-end;
+}
+
+.surface-legend-tick--top {
+  top: 0;
+}
+
+.surface-legend-tick--bottom {
+  top: 1.55rem;
+}
+
+.surface-legend-tick-mark {
+  width: 1px;
+  height: 0.55rem;
+  background: rgb(100 116 139 / 55%);
+}
+
+.surface-legend-tick-label {
+  color: #334155;
+  font-size: 0.66rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.population-surface-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 180px;
+  color: #0f172a;
+}
+
+.population-surface-popup__title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+
+.population-surface-popup__value {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.population-surface-popup__meta {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #334155;
+}
+
+.legend-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  line-height: 1.1;
+}
+
+.legend-copy small {
+  color: #475569;
+  font-size: 0.7rem;
+  line-height: 1.25;
 }
 
 .legend-line.transit {

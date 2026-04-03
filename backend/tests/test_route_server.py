@@ -373,6 +373,57 @@ def test_population_grid_passes_through_bounds(monkeypatch) -> None:
     }
 
 
+def test_floor_space_density_passes_through_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+
+    captured: dict[str, float | int | str] = {}
+
+    def fake_load_floor_space_density_geojson(
+        *,
+        session,
+        dataset_release: str,
+        grid_resolution_m: int,
+        min_lat: float | None = None,
+        min_lon: float | None = None,
+        max_lat: float | None = None,
+        max_lon: float | None = None,
+    ):
+        captured["dataset_release"] = dataset_release
+        captured["grid_resolution_m"] = grid_resolution_m
+        captured["min_lat"] = min_lat if min_lat is not None else -1
+        captured["min_lon"] = min_lon if min_lon is not None else -1
+        captured["max_lat"] = max_lat if max_lat is not None else -1
+        captured["max_lon"] = max_lon if max_lon is not None else -1
+        return {"type": "FeatureCollection", "features": []}
+
+    monkeypatch.setattr(
+        route_service_module,
+        "load_floor_space_density_geojson",
+        fake_load_floor_space_density_geojson,
+    )
+
+    payload = service.floor_space_density(
+        dataset_release="2023-04-01",
+        grid_resolution_m=100,
+        min_lat=53.4,
+        min_lon=9.7,
+        max_lat=53.7,
+        max_lon=10.2,
+    )
+
+    assert payload["type"] == "FeatureCollection"
+    assert captured == {
+        "dataset_release": "2023-04-01",
+        "grid_resolution_m": 100,
+        "min_lat": 53.4,
+        "min_lon": 9.7,
+        "max_lat": 53.7,
+        "max_lon": 10.2,
+    }
+
+
 def test_fastapi_health_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
     args = route_server._build_parser().parse_args([])
@@ -616,6 +667,57 @@ def test_fastapi_population_grid_endpoint_returns_typed_payload(monkeypatch) -> 
     assert payload["type"] == "FeatureCollection"
     assert payload["features"][0]["properties"]["population_estimate"] == 125.0
     assert payload["features"][0]["geometry"]["coordinates"][0][0] == [9.99, 53.55]
+
+
+def test_fastapi_floor_space_density_endpoint_returns_typed_payload(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(route_service_module, "Database", lambda: _FakeDatabase())
+    args = route_server._build_parser().parse_args([])
+    service = route_service_module.RouteService(args)
+    monkeypatch.setattr(
+        service,
+        "floor_space_density",
+        lambda **_kwargs: {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "building_count": 4,
+                        "floor_space_m2": 2800.0,
+                        "floor_space_density_sqkm": 280000.0,
+                        "population_estimate": 140.0,
+                        "population_density_sqkm": 14000.0,
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [9.99, 53.55],
+                    },
+                }
+            ],
+        },
+    )
+    app = fastapi_app_module.build_fastapi_app(service)
+    client = TestClient(app)
+
+    response = client.get(
+        "/floor-space-density",
+        params={
+            "dataset_release": "2023-04-01",
+            "grid_resolution_m": 100,
+            "min_lat": 53.4,
+            "min_lon": 9.7,
+            "max_lat": 53.7,
+            "max_lon": 10.2,
+        },
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["type"] == "FeatureCollection"
+    assert payload["features"][0]["properties"]["floor_space_m2"] == 2800.0
+    assert payload["features"][0]["geometry"]["coordinates"] == [9.99, 53.55]
 
 
 def test_fastapi_reload_graph_endpoint(monkeypatch) -> None:

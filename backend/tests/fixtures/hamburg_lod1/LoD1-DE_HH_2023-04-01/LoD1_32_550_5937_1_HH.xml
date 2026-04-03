@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<core:CityModel xmlns:bldg="http://www.opengis.net/citygml/building/1.0" xmlns:xAL="urn:oasis:names:tc:ciq:xsdschema:xAL:2.0" xmlns:gml="http://www.opengis.net/gml" xmlns:core="http://www.opengis.net/citygml/1.0" xmlns:gen="http://www.opengis.net/citygml/generics/1.0">
+  <gml:name>LoD1_32_550_5937_1_HH</gml:name>
+  <gml:boundedBy>
+    <gml:Envelope srsName="urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH" srsDimension="3">
+      <gml:lowerCorner srsDimension="3">550000.000 5937000.000 4.000</gml:lowerCorner>
+      <gml:upperCorner srsDimension="3">550010.000 5937010.000 16.500</gml:upperCorner>
+    </gml:Envelope>
+  </gml:boundedBy>
+  <core:cityObjectMember>
+    <bldg:Building gml:id="DEHHTEST0001">
+      <gml:name>Test Building</gml:name>
+      <gen:stringAttribute name="Gemeindeschluessel">
+        <gen:value>02100000</gen:value>
+      </gen:stringAttribute>
+      <gen:stringAttribute name="Grundrissaktualitaet">
+        <gen:value>2023-01-26</gen:value>
+      </gen:stringAttribute>
+      <bldg:function>31001_1000</bldg:function>
+      <bldg:measuredHeight uom="urn:adv:uom:m">12.5</bldg:measuredHeight>
+      <bldg:storeysAboveGround>4</bldg:storeysAboveGround>
+      <bldg:lod1Solid>
+        <gml:Solid>
+          <gml:exterior>
+            <gml:CompositeSurface>
+              <gml:surfaceMember>
+                <gml:Polygon>
+                  <gml:exterior>
+                    <gml:LinearRing>
+                      <gml:posList srsDimension="3">550000 5937000 4 550010 5937000 4 550010 5937010 4 550000 5937010 4 550000 5937000 4</gml:posList>
+                    </gml:LinearRing>
+                  </gml:exterior>
+                </gml:Polygon>
+              </gml:surfaceMember>
+              <gml:surfaceMember>
+                <gml:Polygon>
+                  <gml:exterior>
+                    <gml:LinearRing>
+                      <gml:posList srsDimension="3">550000 5937000 16.5 550000 5937010 16.5 550010 5937010 16.5 550010 5937000 16.5 550000 5937000 16.5</gml:posList>
+                    </gml:LinearRing>
+                  </gml:exterior>
+                </gml:Polygon>
+              </gml:surfaceMember>
+            </gml:CompositeSurface>
+          </gml:exterior>
+        </gml:Solid>
+      </bldg:lod1Solid>
+      <bldg:lod1TerrainIntersection>
+        <gml:MultiCurve>
+          <gml:curveMember>
+            <gml:LineString>
+              <gml:posList srsDimension="3">550000 5937000 4 550010 5937000 4 550010 5937010 4 550000 5937010 4 550000 5937000 4</gml:posList>
+            </gml:LineString>
+          </gml:curveMember>
+        </gml:MultiCurve>
+      </bldg:lod1TerrainIntersection>
+      <bldg:address>
+        <core:Address>
+          <core:xalAddress>
+            <xAL:AddressDetails>
+              <xAL:Country>
+                <xAL:CountryName>Germany</xAL:CountryName>
+                <xAL:Locality Type="City">
+                  <xAL:LocalityName>Hamburg</xAL:LocalityName>
+                  <xAL:Thoroughfare Type="Street">
+                    <xAL:ThoroughfareNumber>5</xAL:ThoroughfareNumber>
+                    <xAL:ThoroughfareName>Example Street</xAL:ThoroughfareName>
+                  </xAL:Thoroughfare>
+                  <xAL:PostalCode>
+                    <xAL:PostalCodeNumber>20095</xAL:PostalCodeNumber>
+                  </xAL:PostalCode>
+                </xAL:Locality>
+              </xAL:Country>
+            </xAL:AddressDetails>
+          </core:xalAddress>
+        </core:Address>
+      </bldg:address>
+    </bldg:Building>
+  </core:cityObjectMember>
+</core:CityModel>

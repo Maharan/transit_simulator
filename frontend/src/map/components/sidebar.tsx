@@ -10,6 +10,8 @@ type SidebarProps = {
   from: CoordinateInput
   to: CoordinateInput
   departTime: string
+  showPopulationHeatmap: boolean
+  showRapidTransitLines: boolean
   canSubmit: boolean
   onCoordinateChange: (
     endpoint: Endpoint,
@@ -17,6 +19,8 @@ type SidebarProps = {
     value: string,
   ) => void
   onDepartTimeChange: (value: string) => void
+  onPopulationHeatmapToggle: (value: boolean) => void
+  onRapidTransitLinesToggle: (value: boolean) => void
   onSubmit: () => void
   onClear: () => void
 }
@@ -25,9 +29,13 @@ function Sidebar({
   from,
   to,
   departTime,
+  showPopulationHeatmap,
+  showRapidTransitLines,
   canSubmit,
   onCoordinateChange,
   onDepartTimeChange,
+  onPopulationHeatmapToggle,
+  onRapidTransitLinesToggle,
   onSubmit,
   onClear,
 }: SidebarProps) {
@@ -101,6 +109,39 @@ function Sidebar({
             placeholder="09:00:00"
           />
         </label>
+
+        <fieldset>
+          <legend>Map Layers</legend>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={showRapidTransitLines}
+              onChange={(event) =>
+                onRapidTransitLinesToggle(event.target.checked)
+              }
+            />
+            <span>
+              S-Bahn / U-Bahn Lines
+              <small>
+                Static rapid-transit network overlay using the backend line
+                geometry and colors.
+              </small>
+            </span>
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={showPopulationHeatmap}
+              onChange={(event) =>
+                onPopulationHeatmapToggle(event.target.checked)
+              }
+            />
+            <span>
+              Population Surface
+              <small>Fixed-color floor-space density grid scaled to 1.85 million residents.</small>
+            </span>
+          </label>
+        </fieldset>
 
         <div className="actions">
           <button type="submit" disabled={!canSubmit}>

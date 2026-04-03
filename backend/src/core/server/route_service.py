@@ -13,6 +13,7 @@ from core.routing.route_planner import (
 )
 from infra import Database
 
+from .floor_space_density import load_floor_space_density_geojson
 from .network_lines import load_network_lines_geojson
 from .population_grid import load_population_grid_geojson
 from .segment_shapes import attach_path_segment_geometries
@@ -124,6 +125,30 @@ class RouteService:
             return load_population_grid_geojson(
                 session=session,
                 dataset_year=dataset_year,
+                min_lat=min_lat,
+                min_lon=min_lon,
+                max_lat=max_lat,
+                max_lon=max_lon,
+            )
+        finally:
+            session.close()
+
+    def floor_space_density(
+        self,
+        *,
+        dataset_release: str,
+        grid_resolution_m: int = 100,
+        min_lat: float | None = None,
+        min_lon: float | None = None,
+        max_lat: float | None = None,
+        max_lon: float | None = None,
+    ) -> dict[str, Any]:
+        session = self._database.session()
+        try:
+            return load_floor_space_density_geojson(
+                session=session,
+                dataset_release=dataset_release,
+                grid_resolution_m=grid_resolution_m,
                 min_lat=min_lat,
                 min_lon=min_lon,
                 max_lat=max_lat,

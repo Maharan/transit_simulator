@@ -6,12 +6,24 @@ type MapShellProps = {
   isLoading: boolean
   errorMessage: string | null
   routeResult: RouteResponse | null
+  showPopulationHeatmap: boolean
+  showRapidTransitLines: boolean
 }
 
-function MapShell({ isLoading, errorMessage, routeResult }: MapShellProps) {
+function MapShell({
+  isLoading,
+  errorMessage,
+  routeResult,
+  showPopulationHeatmap,
+  showRapidTransitLines,
+}: MapShellProps) {
   return (
     <main className="map-shell">
-      <MapDisplay routeResult={routeResult} />
+      <MapDisplay
+        routeResult={routeResult}
+        showPopulationHeatmap={showPopulationHeatmap}
+        showRapidTransitLines={showRapidTransitLines}
+      />
 
       <MapStatusCard
         isLoading={isLoading}
