@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { MapShell } from './map/components/mapShell'
 import { Sidebar } from './map/components/sidebar'
@@ -10,12 +10,31 @@ import {
   type CoordinateField,
 } from './map/types/coordinates.types.ts'
 
+const THEME_STORAGE_KEY = 'transit-simulator-theme'
+
+type ThemeMode = 'light' | 'dark'
+
+function getInitialThemeMode(): ThemeMode {
+  if (typeof window === 'undefined') {
+    return 'light'
+  }
+
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+  if (storedTheme === 'light' || storedTheme === 'dark') {
+    return storedTheme
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light'
+}
 
 function App() {
   // Form state
   const [from, setFrom] = useState<CoordinateInput>({ lat: '', lon: '' })
   const [to, setTo] = useState<CoordinateInput>({ lat: '', lon: '' })
   const [departTime, setDepartTime] = useState('')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode)
   const [showPopulationHeatmap, setShowPopulationHeatmap] = useState(false)
   const [showRapidTransitLines, setShowRapidTransitLines] = useState(true)
 
@@ -37,6 +56,12 @@ function App() {
   }, [to])
 
   const canSubmit = fromValid && toValid
+  const isDarkMode = themeMode === 'dark'
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode)
+  }, [themeMode])
 
   function handleCoordinateChange(
     endpoint: Endpoint,
@@ -77,11 +102,13 @@ function App() {
         from={from}
         to={to}
         departTime={departTime}
+        isDarkMode={isDarkMode}
         showPopulationHeatmap={showPopulationHeatmap}
         showRapidTransitLines={showRapidTransitLines}
         canSubmit={canSubmit}
         onCoordinateChange={handleCoordinateChange}
         onDepartTimeChange={setDepartTime}
+        onDarkModeToggle={(value) => setThemeMode(value ? 'dark' : 'light')}
         onPopulationHeatmapToggle={setShowPopulationHeatmap}
         onRapidTransitLinesToggle={setShowRapidTransitLines}
         onSubmit={handleSubmit}

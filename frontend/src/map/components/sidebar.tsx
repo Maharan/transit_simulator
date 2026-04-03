@@ -10,6 +10,7 @@ type SidebarProps = {
   from: CoordinateInput
   to: CoordinateInput
   departTime: string
+  isDarkMode: boolean
   showPopulationHeatmap: boolean
   showRapidTransitLines: boolean
   canSubmit: boolean
@@ -19,6 +20,7 @@ type SidebarProps = {
     value: string,
   ) => void
   onDepartTimeChange: (value: string) => void
+  onDarkModeToggle: (value: boolean) => void
   onPopulationHeatmapToggle: (value: boolean) => void
   onRapidTransitLinesToggle: (value: boolean) => void
   onSubmit: () => void
@@ -29,11 +31,13 @@ function Sidebar({
   from,
   to,
   departTime,
+  isDarkMode,
   showPopulationHeatmap,
   showRapidTransitLines,
   canSubmit,
   onCoordinateChange,
   onDepartTimeChange,
+  onDarkModeToggle,
   onPopulationHeatmapToggle,
   onRapidTransitLinesToggle,
   onSubmit,
@@ -139,6 +143,24 @@ function Sidebar({
             <span>
               Population Surface
               <small>Fixed-color floor-space density grid scaled to 1.85 million residents.</small>
+            </span>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Appearance</legend>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={isDarkMode}
+              onChange={(event) => onDarkModeToggle(event.target.checked)}
+            />
+            <span>
+              Dark Mode
+              <small>
+                Switch the planner panels, legends, and map popups to a darker
+                theme.
+              </small>
             </span>
           </label>
         </fieldset>
