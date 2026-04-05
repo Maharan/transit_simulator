@@ -7,16 +7,20 @@ from typing import cast
 from sqlalchemy.orm import Session
 
 from .base import BaseGraph
-from .multi_edge_graph import (
+from .gtfs_support import (
     DEFAULT_WALK_MAX_DISTANCE_M,
     DEFAULT_WALK_MAX_NEIGHBORS,
     DEFAULT_WALK_SPEED_MPS,
-    _edge_timing,
-    _time_to_seconds,
+    EMPTY_TRIP_BUILD_METADATA,
+    TripBuildMetadata,
+    edge_timing,
+    load_stop_context,
+    load_trip_metadata,
+    time_to_seconds,
 )
 from .trip_stop_graph import make_trip_stop_node_id
 from core.graph.walk import WALK_EDGE_LABEL, build_walk_edges
-from core.gtfs.models import Stop, StopTime, Transfer, Trip
+from core.gtfs.models import StopTime, Transfer
 
 DEFAULT_SAME_STOP_TRANSFER_SEC = 0
 
@@ -144,53 +148,12 @@ def _headway_from_departures(departures: list[int]) -> int | None:
     return _median_int(intervals)
 
 
-def _load_stop_context(
-    session: Session,
-    feed_id: str,
-) -> tuple[dict[str, str], dict[str, tuple[float, float]]]:
-    parent_map: dict[str, str] = {}
-    parent_stop_coords: dict[str, tuple[float, float]] = {}
-    stop_rows = (
-        session.query(Stop.stop_id, Stop.parent_station, Stop.stop_lat, Stop.stop_lon)
-        .filter(Stop.feed_id == feed_id)
-        .yield_per(5000)
-    )
-    for stop_id, parent_station, stop_lat, stop_lon in stop_rows:
-        if not stop_id:
-            continue
-        canonical_stop_id = parent_station or stop_id
-        parent_map[stop_id] = canonical_stop_id
-        if stop_lat is not None and stop_lon is not None:
-            parent_stop_coords.setdefault(
-                canonical_stop_id,
-                (float(stop_lat), float(stop_lon)),
-            )
-    return parent_map, parent_stop_coords
-
-
-def _load_trip_meta(
-    session: Session,
-    feed_id: str,
-) -> dict[str, tuple[str | None, str | None, int | None]]:
-    trip_meta: dict[str, tuple[str | None, str | None, int | None]] = {}
-    trip_rows = (
-        session.query(Trip.trip_id, Trip.route_id, Trip.service_id, Trip.direction_id)
-        .filter(Trip.feed_id == feed_id)
-        .yield_per(5000)
-    )
-    for trip_id, route_id, service_id, direction_id in trip_rows:
-        if not trip_id:
-            continue
-        trip_meta[trip_id] = (route_id, service_id, direction_id)
-    return trip_meta
-
-
 def _scan_anytime_statistics(
     *,
     session: Session,
     feed_id: str,
     parent_map: dict[str, str],
-    trip_meta: dict[str, tuple[str | None, str | None, int | None]],
+    trip_meta: dict[str, TripBuildMetadata],
     progress: bool,
     progress_every: int,
 ) -> tuple[dict[SegmentKey, int], dict[RouteKey, int | None]]:
@@ -219,10 +182,10 @@ def _scan_anytime_statistics(
     def _flush_trip_departure(trip_id: str | None, first_dep_sec: int | None) -> None:
         if trip_id is None or first_dep_sec is None:
             return
-        route_id, service_id, direction_id = trip_meta.get(trip_id, (None, None, None))
-        route_first_departures[(route_id, service_id, direction_id)].append(
-            first_dep_sec
-        )
+        trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
+        route_first_departures[
+            (trip.route_id, trip.service_id, trip.direction_id)
+        ].append(first_dep_sec)
 
     for (
         trip_id,
@@ -236,9 +199,7 @@ def _scan_anytime_statistics(
         if trip_id != current_trip_id:
             _flush_trip_departure(current_trip_id, current_trip_first_dep_sec)
             current_trip_id = trip_id
-            current_trip_first_dep_sec = _time_to_seconds(
-                departure_time or arrival_time
-            )
+            current_trip_first_dep_sec = time_to_seconds(departure_time or arrival_time)
             prev_stop_id = stop_id
             prev_arrival_time = arrival_time
             prev_departure_time = departure_time
@@ -251,12 +212,16 @@ def _scan_anytime_statistics(
             if from_stop != to_stop:
                 dep_time = prev_departure_time or prev_arrival_time
                 arr_time = arrival_time or departure_time
-                weight_sec, _dep_sec, _arr_sec = _edge_timing(dep_time, arr_time)
+                weight_sec, _dep_sec, _arr_sec = edge_timing(dep_time, arr_time)
                 if weight_sec is not None:
-                    route_id, service_id, direction_id = trip_meta.get(
-                        trip_id, (None, None, None)
+                    trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
+                    key = (
+                        trip.route_id,
+                        trip.service_id,
+                        trip.direction_id,
+                        from_stop,
+                        to_stop,
                     )
-                    key = (route_id, service_id, direction_id, from_stop, to_stop)
                     segment_durations[key].append(weight_sec)
 
         prev_stop_id = stop_id
@@ -300,8 +265,10 @@ def build_trip_stop_anytime_graph_from_gtfs(
     if default_headway_sec is not None and default_headway_sec < 0:
         raise ValueError("default_headway_sec must be >= 0 when provided.")
 
-    parent_map, parent_stop_coords = _load_stop_context(session, feed_id)
-    trip_meta = _load_trip_meta(session, feed_id)
+    stop_context = load_stop_context(session, feed_id)
+    parent_map = stop_context.canonical_stop_by_stop_id
+    parent_stop_coords = stop_context.coordinates_by_canonical_stop_id
+    trip_meta = load_trip_metadata(session, feed_id)
     segment_weight_by_key, route_headway_by_key = _scan_anytime_statistics(
         session=session,
         feed_id=feed_id,
@@ -320,14 +287,14 @@ def build_trip_stop_anytime_graph_from_gtfs(
         if route_stop_id in graph.nodes:
             return route_stop_id
         stop_lat, stop_lon = parent_stop_coords.get(canonical_stop_id, (None, None))
-        route_id, service_id, direction_id = trip_meta.get(trip_id, (None, None, None))
+        trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
         graph.add_node(
             route_stop_id,
             stop_id=canonical_stop_id,
             trip_id=trip_id,
-            route_id=route_id,
-            service_id=service_id,
-            direction_id=direction_id,
+            route_id=trip.route_id,
+            service_id=trip.service_id,
+            direction_id=trip.direction_id,
             stop_lat=cast(float | None, stop_lat),
             stop_lon=cast(float | None, stop_lon),
         )
@@ -372,14 +339,18 @@ def build_trip_stop_anytime_graph_from_gtfs(
             if from_node != to_node:
                 from_stop = parent_map.get(prev_stop_id, prev_stop_id)
                 to_stop = parent_map.get(stop_id, stop_id)
-                route_id, service_id, direction_id = trip_meta.get(
-                    trip_id, (None, None, None)
+                trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
+                segment_key = (
+                    trip.route_id,
+                    trip.service_id,
+                    trip.direction_id,
+                    from_stop,
+                    to_stop,
                 )
-                segment_key = (route_id, service_id, direction_id, from_stop, to_stop)
-                route_key = (route_id, service_id, direction_id)
+                route_key = (trip.route_id, trip.service_id, trip.direction_id)
                 dep_time = prev_departure_time or prev_arrival_time
                 arr_time = arrival_time or departure_time
-                observed_weight, _dep_sec, _arr_sec = _edge_timing(dep_time, arr_time)
+                observed_weight, _dep_sec, _arr_sec = edge_timing(dep_time, arr_time)
                 anytime_weight = segment_weight_by_key.get(segment_key, observed_weight)
                 computed_headway_sec = route_headway_by_key.get(route_key)
                 headway_sec = (
@@ -395,9 +366,9 @@ def build_trip_stop_anytime_graph_from_gtfs(
                         kind="ride",
                         headway_sec=headway_sec,
                         trip_id=trip_id,
-                        route_id=route_id,
-                        service_id=service_id,
-                        direction_id=direction_id,
+                        route_id=trip.route_id,
+                        service_id=trip.service_id,
+                        direction_id=trip.direction_id,
                         stop_sequence=prev_stop_sequence,
                     ),
                 )

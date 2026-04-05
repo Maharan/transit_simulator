@@ -8,14 +8,18 @@ from typing import cast
 from sqlalchemy.orm import Session
 
 from .base import BaseGraph
-from .multi_edge_graph import (
+from .gtfs_support import (
     DEFAULT_WALK_MAX_DISTANCE_M,
     DEFAULT_WALK_MAX_NEIGHBORS,
     DEFAULT_WALK_SPEED_MPS,
-    _edge_timing,
+    EMPTY_TRIP_BUILD_METADATA,
+    TripBuildMetadata,
+    edge_timing,
+    load_stop_context,
+    load_trip_metadata,
 )
 from core.graph.walk import WALK_EDGE_LABEL, build_walk_edges
-from core.gtfs.models import Stop, StopTime, Transfer, Trip
+from core.gtfs.models import StopTime, Transfer
 from core.routing.utils import seconds_to_time_str
 
 TRIP_STOP_NODE_SEPARATOR = "::"
@@ -377,7 +381,7 @@ def _build_trip_pattern_map(
     session: Session,
     feed_id: str,
     parent_map: dict[str, str],
-    trip_meta: dict[str, tuple[str | None, str | None, int | None]],
+    trip_meta: dict[str, TripBuildMetadata],
     progress: bool,
     progress_every: int,
 ) -> dict[str, str]:
@@ -401,8 +405,12 @@ def _build_trip_pattern_map(
     def _finalize_current_trip(trip_id: str | None, stop_sequence: list[str]) -> None:
         if trip_id is None or not stop_sequence:
             return
-        route_id, _service_id, direction_id = trip_meta.get(trip_id, (None, None, None))
-        pattern_key: PatternKey = (route_id, direction_id, tuple(stop_sequence))
+        trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
+        pattern_key: PatternKey = (
+            trip.route_id,
+            trip.direction_id,
+            tuple(stop_sequence),
+        )
         pattern_id = pattern_key_to_id.get(pattern_key)
         if pattern_id is None:
             pattern_id = _pattern_id_from_key(pattern_key)
@@ -460,41 +468,17 @@ def build_trip_stop_graph_from_gtfs(
     if transfer_edge_penalty_sec < 0:
         raise ValueError("transfer_edge_penalty_sec must be >= 0.")
 
-    parent_map: dict[str, str] = {}
-    parent_stop_coords: dict[str, tuple[float, float]] = {}
-
-    stops = (
-        session.query(Stop.stop_id, Stop.parent_station, Stop.stop_lat, Stop.stop_lon)
-        .filter(Stop.feed_id == feed_id)
-        .yield_per(5000)
+    stop_context = load_stop_context(
+        session,
+        feed_id,
+        progress=progress,
+        progress_every=progress_every,
+        progress_label="for trip-stop graph",
     )
-    stop_count = 0
-    for stop_id, parent_station, stop_lat, stop_lon in stops:
-        if not stop_id:
-            continue
-        canonical_stop_id = parent_station or stop_id
-        parent_map[stop_id] = canonical_stop_id
-        if stop_lat is not None and stop_lon is not None:
-            parent_stop_coords.setdefault(
-                canonical_stop_id,
-                (float(stop_lat), float(stop_lon)),
-            )
-        stop_count += 1
-        if progress and stop_count % progress_every == 0:
-            print(f"Loaded {stop_count} stops for trip-stop graph...")
-    if progress:
-        print(f"Loaded {stop_count} stops for trip-stop graph total.")
+    parent_map = stop_context.canonical_stop_by_stop_id
+    parent_stop_coords = stop_context.coordinates_by_canonical_stop_id
 
-    trip_meta: dict[str, tuple[str | None, str | None, int | None]] = {}
-    trip_rows = (
-        session.query(Trip.trip_id, Trip.route_id, Trip.service_id, Trip.direction_id)
-        .filter(Trip.feed_id == feed_id)
-        .yield_per(5000)
-    )
-    for trip_id, route_id, service_id, direction_id in trip_rows:
-        if not trip_id:
-            continue
-        trip_meta[trip_id] = (route_id, service_id, direction_id)
+    trip_meta = load_trip_metadata(session, feed_id)
 
     trip_to_pattern_id = _build_trip_pattern_map(
         session=session,
@@ -517,14 +501,14 @@ def build_trip_stop_graph_from_gtfs(
         if route_stop_id in graph.nodes:
             return route_stop_id
         stop_lat, stop_lon = parent_stop_coords.get(canonical_stop_id, (None, None))
-        route_id, service_id, direction_id = trip_meta.get(trip_id, (None, None, None))
+        trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
         graph.add_node(
             route_stop_id,
             stop_id=canonical_stop_id,
             pattern_id=pattern_id,
-            route_id=route_id,
-            service_id=service_id,
-            direction_id=direction_id,
+            route_id=trip.route_id,
+            service_id=trip.service_id,
+            direction_id=trip.direction_id,
             stop_lat=cast(float | None, stop_lat),
             stop_lon=cast(float | None, stop_lon),
         )
@@ -571,10 +555,8 @@ def build_trip_stop_graph_from_gtfs(
             if from_node and to_node and from_node != to_node:
                 dep_time = prev_departure_time or prev_arrival_time
                 arr_time = arrival_time or departure_time
-                weight_sec, dep_sec, arr_sec = _edge_timing(dep_time, arr_time)
-                route_id, _service_id, _direction_id = trip_meta.get(
-                    trip_id, (None, None, None)
-                )
+                weight_sec, dep_sec, arr_sec = edge_timing(dep_time, arr_time)
+                trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
                 if dep_sec is not None and arr_sec is not None:
                     graph.add_ride_departure(
                         from_node,
@@ -582,7 +564,7 @@ def build_trip_stop_graph_from_gtfs(
                         dep_time_sec=dep_sec,
                         arr_time_sec=arr_sec,
                         trip_id=trip_id,
-                        route_id=route_id,
+                        route_id=trip.route_id,
                     )
                 elif weight_sec is not None:
                     graph.add_edge(
@@ -592,7 +574,7 @@ def build_trip_stop_graph_from_gtfs(
                             weight_sec=weight_sec,
                             kind="ride",
                             trip_id=trip_id,
-                            route_id=route_id,
+                            route_id=trip.route_id,
                             stop_sequence=prev_stop_sequence,
                         ),
                     )

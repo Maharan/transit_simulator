@@ -10,12 +10,19 @@ from dotenv import load_dotenv
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT / "src"))
 
+from core.built_environment import (  # noqa: E402
+    DEFAULT_FLOOR_SPACE_GRID_RESOLUTION_M,
+    DEFAULT_HAMBURG_LOD1_DATASET_RELEASE,
+    DEFAULT_HAMBURG_TOTAL_POPULATION,
+    refresh_hamburg_floor_space_grid,
+)
+
 
 def _build_parser(
     *,
-    default_dataset_release: str,
-    default_grid_resolution_m: int,
-    default_total_population: float,
+    default_dataset_release: str = DEFAULT_HAMBURG_LOD1_DATASET_RELEASE,
+    default_grid_resolution_m: int = DEFAULT_FLOOR_SPACE_GRID_RESOLUTION_M,
+    default_total_population: float = DEFAULT_HAMBURG_TOTAL_POPULATION,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build a gridded Hamburg floor-space surface in Postgres."
@@ -67,13 +74,6 @@ def _build_parser(
 
 
 def main(argv: list[str] | None = None) -> None:
-    from core.built_environment import (
-        DEFAULT_FLOOR_SPACE_GRID_RESOLUTION_M,
-        DEFAULT_HAMBURG_LOD1_DATASET_RELEASE,
-        DEFAULT_HAMBURG_TOTAL_POPULATION,
-        refresh_hamburg_floor_space_grid,
-    )
-
     load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
     args = _build_parser(
         default_dataset_release=DEFAULT_HAMBURG_LOD1_DATASET_RELEASE,

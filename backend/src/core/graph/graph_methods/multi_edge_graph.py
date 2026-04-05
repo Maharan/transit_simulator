@@ -6,14 +6,20 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from .base import BaseGraph
+from .gtfs_support import (
+    DEFAULT_WALK_MAX_DISTANCE_M,
+    DEFAULT_WALK_MAX_NEIGHBORS,
+    DEFAULT_WALK_SPEED_MPS,
+    EMPTY_TRIP_BUILD_METADATA,
+    edge_timing,
+    load_parent_stop_coords,
+    load_trip_metadata,
+    time_to_seconds,
+)
 from core.graph.models import GraphEdge, GraphNode
 from .synthetic_edge import SyntheticEdge
 from core.graph.walk import WALK_EDGE_LABEL, build_walk_edges
-from core.gtfs.models import Stop, StopTime, Transfer, Trip
-
-DEFAULT_WALK_MAX_DISTANCE_M = 500
-DEFAULT_WALK_SPEED_MPS = 1.4
-DEFAULT_WALK_MAX_NEIGHBORS = 8
+from core.gtfs.models import Stop, StopTime, Transfer
 
 
 @dataclass(frozen=True)
@@ -75,58 +81,9 @@ class MultiGraph(BaseGraph):
 Edge = MultiGraphEdge
 TripBucket = MultiGraphTripBucket
 Graph = MultiGraph
-
-
-def _time_to_seconds(time_str: str | None) -> int | None:
-    if not time_str:
-        return None
-    parts = time_str.split(":")
-    if len(parts) != 3:
-        return None
-    try:
-        hours = int(parts[0])
-        minutes = int(parts[1])
-        seconds = int(parts[2])
-    except ValueError:
-        return None
-    if minutes < 0 or minutes >= 60 or seconds < 0 or seconds >= 60:
-        return None
-    return hours * 3600 + minutes * 60 + seconds
-
-
-def _edge_timing(
-    dep_time: str | None, arr_time: str | None
-) -> tuple[int | None, int | None, int | None]:
-    dep_sec = _time_to_seconds(dep_time)
-    arr_sec = _time_to_seconds(arr_time)
-    if dep_sec is None or arr_sec is None:
-        return None, dep_sec, arr_sec
-    weight = arr_sec - dep_sec
-    if weight < 0:
-        return None, dep_sec, arr_sec
-    return weight, dep_sec, arr_sec
-
-
-def _load_parent_stop_coords(
-    session: Session,
-    feed_id: str,
-    *,
-    known_nodes: set[str] | None = None,
-) -> dict[str, tuple[float, float]]:
-    rows = (
-        session.query(Stop.stop_id, Stop.parent_station, Stop.stop_lat, Stop.stop_lon)
-        .filter(Stop.feed_id == feed_id)
-        .yield_per(5000)
-    )
-    parent_stop_coords: dict[str, tuple[float, float]] = {}
-    for stop_id, parent_station, stop_lat, stop_lon in rows:
-        if not stop_id or stop_lat is None or stop_lon is None:
-            continue
-        node_id = parent_station or stop_id
-        if known_nodes is not None and node_id not in known_nodes:
-            continue
-        parent_stop_coords.setdefault(node_id, (float(stop_lat), float(stop_lon)))
-    return parent_stop_coords
+_time_to_seconds = time_to_seconds
+_edge_timing = edge_timing
+_load_parent_stop_coords = load_parent_stop_coords
 
 
 def _add_walk_edges(
@@ -210,16 +167,7 @@ def build_graph_from_gtfs(
         print(f"Loaded {stop_count} stops total.")
         print(f"Found {len(parent_pairs)} child stops with parent stations.")
 
-    trip_meta = {}
-    trip_rows = (
-        session.query(Trip.trip_id, Trip.route_id, Trip.service_id)
-        .filter(Trip.feed_id == feed_id)
-        .yield_per(5000)
-    )
-    for trip_id, route_id, service_id in trip_rows:
-        if not trip_id:
-            continue
-        trip_meta[trip_id] = (route_id, service_id)
+    trip_meta = load_trip_metadata(session, feed_id)
 
     def add_edge(
         from_stop_id: str,
@@ -348,7 +296,7 @@ def build_graph_from_gtfs(
             dep_time = prev_departure_time or prev_arrival_time
             arr_time = arrival_time or departure_time
             weight_sec, dep_sec, arr_sec = _edge_timing(dep_time, arr_time)
-            route_id, service_id = trip_meta.get(trip_id, (None, None))
+            trip = trip_meta.get(trip_id, EMPTY_TRIP_BUILD_METADATA)
             from_node = parent_map.get(prev_stop_id, prev_stop_id)
             to_node = parent_map.get(stop_id, stop_id)
             if from_node != to_node:
@@ -358,8 +306,8 @@ def build_graph_from_gtfs(
                     kind="trip",
                     weight_sec=weight_sec,
                     trip_id=trip_id,
-                    route_id=route_id,
-                    service_id=service_id,
+                    route_id=trip.route_id,
+                    service_id=trip.service_id,
                     dep_time=dep_time,
                     arr_time=arr_time,
                     dep_time_sec=dep_sec,
@@ -370,7 +318,7 @@ def build_graph_from_gtfs(
                 if dep_sec is not None and arr_sec is not None:
                     key = (from_node, to_node)
                     trip_bucket_entries.setdefault(key, []).append(
-                        (dep_sec, arr_sec, trip_id, route_id)
+                        (dep_sec, arr_sec, trip_id, trip.route_id)
                     )
 
         prev_stop_id = stop_id
