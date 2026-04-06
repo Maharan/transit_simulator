@@ -74,7 +74,7 @@ class ItineraryBuilder:
             stops=stops, edge_path=result.edge_path
         )
         path_lines = self._build_path_lines(path_segments)
-        legs = self._build_legs(result)
+        legs = self._build_legs(path_segments)
         leg_lines = self._build_leg_lines(legs)
         return Itinerary(
             summary=summary,
@@ -142,7 +142,12 @@ class ItineraryBuilder:
                     ),
                 )
             )
-        return segments
+        merged_segments = self._merge_consecutive_transfer_segments(segments)
+        return [
+            segment
+            for segment in merged_segments
+            if not self._should_hide_transfer_presentation(segment.edge)
+        ]
 
     def _build_path_lines(
         self,
@@ -162,8 +167,11 @@ class ItineraryBuilder:
             )
         return lines
 
-    def _build_legs(self, result: ResultLike) -> list["ItineraryLeg"]:
-        return self._summarize_legs(result.edge_path, result.stop_path)
+    def _build_legs(
+        self,
+        path_segments: list["ItineraryPathSegment"],
+    ) -> list["ItineraryLeg"]:
+        return self._summarize_legs(path_segments)
 
     def _build_leg_lines(self, legs: list["ItineraryLeg"]) -> list[str]:
         return [f"  {leg.text}" for leg in legs]
@@ -224,17 +232,111 @@ class ItineraryBuilder:
             parts.append(f"+{self._transfer_penalty_sec}s penalty")
         return ", ".join(parts)
 
-    def _summarize_legs(self, edge_path, stop_path) -> list["ItineraryLeg"]:
+    def _effective_transfer_duration(self, edge) -> int | None:
+        transfer_time = getattr(edge, "weight_sec", None)
+        apply_penalty = getattr(edge, "apply_penalty", True)
+        if transfer_time is not None and apply_penalty:
+            transfer_time += self._transfer_penalty_sec
+        return transfer_time
+
+    def _should_hide_transfer_presentation(self, edge) -> bool:
+        if getattr(edge, "kind", None) != "transfer":
+            return False
+        if getattr(edge, "label", None) != "station_link":
+            return False
+        transfer_time = self._effective_transfer_duration(edge)
+        return transfer_time is not None and transfer_time <= 0
+
+    def _merge_consecutive_transfer_segments(
+        self,
+        segments: list["ItineraryPathSegment"],
+    ) -> list["ItineraryPathSegment"]:
+        if not segments:
+            return []
+
+        merged_segments: list[ItineraryPathSegment] = []
+        transfer_chain: list[ItineraryPathSegment] = []
+
+        for segment in segments:
+            if segment.edge.kind == "transfer":
+                transfer_chain.append(segment)
+                continue
+
+            if transfer_chain:
+                merged_segments.append(self._merge_transfer_chain(transfer_chain))
+                transfer_chain = []
+            merged_segments.append(segment)
+
+        if transfer_chain:
+            merged_segments.append(self._merge_transfer_chain(transfer_chain))
+
+        return merged_segments
+
+    def _merge_transfer_chain(
+        self,
+        transfer_chain: list["ItineraryPathSegment"],
+    ) -> "ItineraryPathSegment":
+        if len(transfer_chain) == 1:
+            return transfer_chain[0]
+
+        labels = [
+            segment.edge.label for segment in transfer_chain if segment.edge.label
+        ]
+        transfer_types = {
+            segment.edge.transfer_type
+            for segment in transfer_chain
+            if segment.edge.transfer_type is not None
+        }
+        weight_values = [segment.edge.weight_sec for segment in transfer_chain]
+        merged_weight = (
+            sum(weight for weight in weight_values if weight is not None)
+            if all(weight is not None for weight in weight_values)
+            else None
+        )
+
+        merged_label: str | None = None
+        if any(label == "walk" for label in labels):
+            merged_label = "walk"
+        elif labels:
+            merged_label = labels[0]
+
+        return ItineraryPathSegment(
+            from_stop=transfer_chain[0].from_stop,
+            to_stop=transfer_chain[-1].to_stop,
+            edge=ItineraryPathEdge(
+                kind="transfer",
+                label=merged_label,
+                weight_sec=merged_weight,
+                route=None,
+                route_id=None,
+                trip_id=None,
+                dep_time=None,
+                arr_time=None,
+                dep_time_sec=None,
+                arr_time_sec=None,
+                transfer_type=next(iter(transfer_types))
+                if len(transfer_types) == 1
+                else None,
+                apply_penalty=any(
+                    segment.edge.apply_penalty for segment in transfer_chain
+                ),
+            ),
+        )
+
+    def _summarize_legs(
+        self,
+        path_segments: list["ItineraryPathSegment"],
+    ) -> list["ItineraryLeg"]:
         legs: list[ItineraryLeg] = []
         current_route: str | None = None
         leg_start_name: str | None = None
+        leg_end_name: str | None = None
         leg_time_sec: int | None = 0
 
-        for index, edge in enumerate(edge_path):
-            from_stop = stop_path[index]
-            to_stop = stop_path[index + 1]
-            from_name = self._stop_names.get(from_stop, from_stop)
-            to_name = self._stop_names.get(to_stop, to_stop)
+        for segment in path_segments:
+            edge = segment.edge
+            from_name = segment.from_stop.stop_name
+            to_name = segment.to_stop.stop_name
 
             if edge.kind == "transfer":
                 if current_route:
@@ -242,24 +344,24 @@ class ItineraryBuilder:
                         self._create_leg(
                             mode="ride",
                             from_stop=leg_start_name,
-                            to_stop=from_name,
+                            to_stop=leg_end_name or from_name,
                             route=current_route,
                             duration_sec=leg_time_sec,
                         )
                     )
                     current_route = None
                     leg_start_name = None
+                    leg_end_name = None
                     leg_time_sec = 0
-                transfer_time = edge.weight_sec
-                apply_penalty = getattr(edge, "apply_penalty", True)
-                if transfer_time is not None and apply_penalty:
-                    transfer_time += self._transfer_penalty_sec
+                transfer_time = self._effective_transfer_duration(edge)
                 transfer_label = "Transfer"
                 edge_label = getattr(edge, "label", None)
                 if edge_label == "station_link":
                     transfer_label = "Station link"
                 elif edge_label == "walk":
                     transfer_label = "Walk"
+                if self._should_hide_transfer_presentation(edge):
+                    continue
                 legs.append(
                     self._create_leg(
                         mode=transfer_label.lower().replace(" ", "_"),
@@ -283,20 +385,24 @@ class ItineraryBuilder:
                 if current_route is None:
                     current_route = route_label
                     leg_start_name = from_name
+                    leg_end_name = to_name
                     leg_time_sec = 0
                 elif current_route != route_label:
                     legs.append(
                         self._create_leg(
                             mode="ride",
                             from_stop=leg_start_name,
-                            to_stop=from_name,
+                            to_stop=leg_end_name or from_name,
                             route=current_route,
                             duration_sec=leg_time_sec,
                         )
                     )
                     current_route = route_label
                     leg_start_name = from_name
+                    leg_end_name = to_name
                     leg_time_sec = 0
+                else:
+                    leg_end_name = to_name
 
                 edge_duration = getattr(edge, "weight_sec", None)
                 if edge_duration is None:
@@ -321,7 +427,7 @@ class ItineraryBuilder:
                 self._create_leg(
                     mode="ride",
                     from_stop=leg_start_name,
-                    to_stop=self._stop_names.get(stop_path[-1], stop_path[-1]),
+                    to_stop=leg_end_name,
                     route=current_route,
                     duration_sec=leg_time_sec,
                 )

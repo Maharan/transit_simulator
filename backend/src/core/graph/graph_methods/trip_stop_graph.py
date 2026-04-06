@@ -24,7 +24,7 @@ from core.routing.utils import seconds_to_time_str
 
 TRIP_STOP_NODE_SEPARATOR = "::"
 DEFAULT_SAME_STOP_TRANSFER_SEC = 0
-DEFAULT_TRANSFER_EDGE_PENALTY_SEC = 30
+DEFAULT_TRANSFER_EDGE_PENALTY_SEC = 0
 SAME_STOP_TRANSFER_HUB_PREFIX = "__same_stop_transfer__"
 
 type TransferAdjacencyTuple = tuple[str, int | None, int | None, bool, str | None]

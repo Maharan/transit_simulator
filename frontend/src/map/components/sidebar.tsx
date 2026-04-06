@@ -52,7 +52,8 @@ function Sidebar({
     <aside className="panel">
       <h1>Transit Route Planner</h1>
       <p className="panel-subtitle">
-        Step 1: controlled form state and layout foundation.
+        Click the map to place the origin, click again to place the destination,
+        and click a third time to reset the selection.
       </p>
 
       <form className="route-form" onSubmit={handleSubmit} onReset={onClear}>
@@ -80,6 +81,9 @@ function Sidebar({
               placeholder="9.989263"
             />
           </label>
+          <small className="field-hint">
+            Filled automatically from the first map click, but still editable.
+          </small>
         </fieldset>
 
         <fieldset>
@@ -102,6 +106,9 @@ function Sidebar({
               placeholder="10.067991"
             />
           </label>
+          <small className="field-hint">
+            Filled automatically from the second map click and routed immediately.
+          </small>
         </fieldset>
 
         <label>
@@ -169,7 +176,16 @@ function Sidebar({
           <button type="submit" disabled={!canSubmit}>
             Route
           </button>
-          <button type="reset" disabled={from.lat === '' && from.lon === '' && to.lat === '' && to.lon === ''}>
+          <button
+            type="reset"
+            disabled={
+              from.lat === '' &&
+              from.lon === '' &&
+              to.lat === '' &&
+              to.lon === '' &&
+              departTime === ''
+            }
+          >
             Clear
           </button>
         </div>

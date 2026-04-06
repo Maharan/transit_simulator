@@ -75,6 +75,8 @@ class PathSegmentEdgeResponse(BaseModel):
     weight_sec: int | None = None
     route: str | None = None
     route_id: str | None = None
+    display_color: str | None = None
+    display_text_color: str | None = None
     trip_id: str | None = None
     dep_time: str | None = None
     arr_time: str | None = None
@@ -99,12 +101,21 @@ class ItineraryResponse(BaseModel):
     legs: list[LegResponse]
 
 
+class RouteOptionResponse(BaseModel):
+    best_plan: RoutePlanResponse
+    itinerary: ItineraryResponse
+    major_trip_transfers: int
+    transit_legs: int
+
+
 class RouteResponse(BaseModel):
     feed_id: str
     cache_logs: list[str]
     context_lines: list[str]
     itinerary: ItineraryResponse
     best_plan: RoutePlanResponse
+    options: list[RouteOptionResponse] = []
+    best_option_index: int = 0
 
 
 class ReloadGraphResponse(BaseModel):
@@ -198,6 +209,8 @@ class RouteRequest(BaseModel):
     transfer_penalty_sec: int | None = None
     route_change_penalty_sec: int | None = None
     max_wait_sec: int | None = None
+    max_rounds: int | None = None
+    max_major_transfers: int | None = None
     heuristic_max_speed_mps: float | None = None
     state_by: str | None = None
     time_horizon_sec: int | None = None

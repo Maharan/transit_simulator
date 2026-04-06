@@ -16,12 +16,11 @@ function useRouteRequest() {
 
     setIsLoading(true)
     setErrorMessage(null)
-
+    setRouteResult(null)
 
     try {
       const result = await postRoute(payload, controller.signal)
       setRouteResult(result)
-
     } catch (error) {
       if (isAbortError(error)) {
         return

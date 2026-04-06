@@ -6,6 +6,7 @@ const ENDPOINT_SOURCE_ID = 'route-endpoints-source'
 const POPULATION_HEATMAP_SOURCE_ID = 'population-heatmap-source'
 const RAPID_TRANSIT_NETWORK_SOURCE_ID = 'rapid-transit-network-source'
 
+const ROUTE_TRANSIT_CASING_LAYER_ID = 'route-transit-casing-layer'
 const ROUTE_TRANSIT_LAYER_ID = 'route-transit-layer'
 const ROUTE_TRANSFER_LAYER_ID = 'route-transfer-layer'
 const STOP_LAYER_ID = 'route-stops-layer'
@@ -131,14 +132,36 @@ function addRouteSourcesAndLayers(map: maplibregl.Map): void {
   })
 
   map.addLayer({
+    id: ROUTE_TRANSIT_CASING_LAYER_ID,
+    type: 'line',
+    source: ROUTE_SOURCE_ID,
+    filter: ['match', ['get', 'edgeKind'], ['trip', 'ride'], true, false],
+    paint: {
+      'line-color': 'rgba(255, 255, 255, 0.92)',
+      'line-width': 6.8,
+      'line-opacity': 0.92,
+    },
+    layout: {
+      'line-cap': 'round',
+      'line-join': 'round',
+      'line-sort-key': ['coalesce', ['to-number', ['get', 'transitLegIndex']], 0],
+    },
+  })
+
+  map.addLayer({
     id: ROUTE_TRANSIT_LAYER_ID,
     type: 'line',
     source: ROUTE_SOURCE_ID,
     filter: ['match', ['get', 'edgeKind'], ['trip', 'ride'], true, false],
     paint: {
-      'line-color': '#1d4ed8',
+      'line-color': ['coalesce', ['get', 'lineColor'], '#1d4ed8'],
       'line-width': 4,
       'line-opacity': 0.85,
+    },
+    layout: {
+      'line-cap': 'round',
+      'line-join': 'round',
+      'line-sort-key': ['coalesce', ['to-number', ['get', 'transitLegIndex']], 0],
     },
   })
 
@@ -148,10 +171,14 @@ function addRouteSourcesAndLayers(map: maplibregl.Map): void {
     source: ROUTE_SOURCE_ID,
     filter: ['!', ['match', ['get', 'edgeKind'], ['trip', 'ride'], true, false]],
     paint: {
-      'line-color': '#d97706',
+      'line-color': ['coalesce', ['get', 'lineColor'], '#d97706'],
       'line-width': 3,
       'line-opacity': 0.9,
       'line-dasharray': [1.5, 1.5],
+    },
+    layout: {
+      'line-cap': 'round',
+      'line-join': 'round',
     },
   })
 
@@ -265,6 +292,8 @@ export {
   ROUTE_SOURCE_ID,
   STOP_SOURCE_ID,
   ENDPOINT_SOURCE_ID,
+  STOP_LAYER_ID,
+  ENDPOINT_LAYER_ID,
   POPULATION_HEATMAP_SOURCE_ID,
   RAPID_TRANSIT_NETWORK_SOURCE_ID,
   POPULATION_HEATMAP_LAYER_ID,

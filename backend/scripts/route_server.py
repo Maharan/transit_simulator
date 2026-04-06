@@ -37,7 +37,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--route-change-penalty",
         type=int,
-        default=300,
+        default=0,
+        help=(
+            "Extra penalty in seconds when switching routes/trips beyond explicit "
+            "transfer times from GTFS transfers.txt (default: 0)."
+        ),
     )
     parser.add_argument(
         "--heuristic-max-speed-mps",
@@ -53,6 +57,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--time-horizon-sec",
         type=int,
         default=4 * 3600,
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        help="Maximum RAPTOR rounds / transit boardings (default: 8).",
+    )
+    parser.add_argument(
+        "--max-major-transfers",
+        type=int,
+        default=4,
+        help=(
+            "Maximum major transit transfers for RAPTOR alternatives "
+            "(walking links do not count; default: 4)."
+        ),
     )
     parser.add_argument("--disable-walking", action="store_true")
     parser.add_argument("--walk-max-distance-m", type=int, default=500)
@@ -78,7 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Fallback headway for trip_stop_anytime when route headway is unknown.",
     )
-    parser.add_argument("--graph-cache-version", type=int, default=7)
+    parser.add_argument("--graph-cache-version", type=int, default=8)
     parser.add_argument(
         "--rebuild-on-start",
         action="store_true",

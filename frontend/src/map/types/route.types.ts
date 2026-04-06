@@ -4,6 +4,8 @@ type RouteRequestPayload = {
   to_lat: number
   to_lon: number
   depart_time?: string
+  graph_method?: string
+  max_major_transfers?: number
 }
 
 type EndpointCandidateResponse = {
@@ -69,6 +71,8 @@ type PathSegmentEdgeResponse = {
   weight_sec: number | null
   route: string | null
   route_id: string | null
+  display_color: string | null
+  display_text_color: string | null
   trip_id: string | null
   dep_time: string | null
   arr_time: string | null
@@ -93,12 +97,21 @@ type ItineraryResponse = {
   legs: LegResponse[]
 }
 
+type RouteOptionResponse = {
+  best_plan: RoutePlanResponse
+  itinerary: ItineraryResponse
+  major_trip_transfers: number
+  transit_legs: number
+}
+
 type RouteResponse = {
   feed_id: string
   cache_logs: string[]
   context_lines: string[]
   itinerary: ItineraryResponse
   best_plan: RoutePlanResponse
+  options: RouteOptionResponse[]
+  best_option_index: number
 }
 
 type RouteErrorResponse = {
@@ -118,4 +131,5 @@ export type {
   PathSegmentEdgeResponse,
   PathSegmentResponse,
   ItineraryResponse,
+  RouteOptionResponse,
 }

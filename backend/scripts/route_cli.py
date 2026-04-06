@@ -93,15 +93,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--transfer-penalty",
         type=int,
-        default=300,
-        help="Penalty in seconds added to each transfer (default: 300).",
+        default=0,
+        help=(
+            "Extra penalty in seconds added on top of transfer edge weights "
+            "(default: 0)."
+        ),
     )
     parser.add_argument(
         "--route-change-penalty",
         type=int,
-        default=None,
-        help="Penalty in seconds when switching trips at the same stop "
-        "(default: transfer penalty).",
+        default=0,
+        help=(
+            "Extra penalty in seconds when switching routes/trips beyond explicit "
+            "transfer times from GTFS transfers.txt (default: 0)."
+        ),
     )
     parser.add_argument(
         "--max-wait-sec",
@@ -126,6 +131,21 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4 * 3600,
         help="Ignore departures after depart_time + horizon (default: 14400).",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        help="Maximum RAPTOR rounds / transit boardings (default: 8).",
+    )
+    parser.add_argument(
+        "--max-major-transfers",
+        type=int,
+        default=4,
+        help=(
+            "Maximum major transit transfers for RAPTOR alternatives "
+            "(walking links do not count; default: 4)."
+        ),
     )
     parser.add_argument(
         "--disable-walking",
@@ -255,6 +275,8 @@ def main() -> None:
                 heuristic_max_speed_mps=args.heuristic_max_speed_mps,
                 state_by=args.state_by,
                 time_horizon_sec=args.time_horizon_sec,
+                max_rounds=args.max_rounds,
+                max_major_transfers=args.max_major_transfers,
                 disable_walking=args.disable_walking,
                 walk_max_distance_m=args.walk_max_distance_m,
                 walk_speed_mps=args.walk_speed_mps,

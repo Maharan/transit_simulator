@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 
 from core.graph.caching import (
     DEFAULT_GRAPH_METHOD,
+    GRAPH_METHOD_RAPTOR,
     InMemoryGraphCache,
     access_or_create_graph_cache,
+    normalize_graph_method,
 )
 from core.graph.utils import resolve_parent_stop
 from core.gtfs.models import Stop
@@ -17,6 +19,13 @@ from core.gtfs.utils import (
     resolve_stops_by_coordinates,
 )
 from core.routing.td_dijkstra import ChosenEdge, PathResult, td_dijkstra
+from core.routing.raptor import (
+    RaptorQuery,
+    RaptorSourceCandidate,
+    RaptorTargetCandidate,
+    RaptorTimetable,
+    run_raptor,
+)
 from core.routing.utils import parse_time_to_seconds, seconds_to_time_str
 from core.user_facing.itinerary import (
     Itinerary,
@@ -153,6 +162,21 @@ class RoutePlan:
 
 
 @dataclass(frozen=True)
+class _RoutePlanOption:
+    best_plan: RoutePlan
+    major_trip_transfers: int
+    transit_legs: int
+
+
+@dataclass(frozen=True)
+class RouteOption:
+    best_plan: RoutePlan
+    itinerary: Itinerary
+    major_trip_transfers: int
+    transit_legs: int
+
+
+@dataclass(frozen=True)
 class RoutePlannerRequest:
     from_stop_name: str | None = None
     to_stop_name: str | None = None
@@ -168,8 +192,8 @@ class RoutePlannerRequest:
     rebuild: bool = False
     assume_zero_missing: bool = False
     depart_time: str = "09:00:00"
-    transfer_penalty_sec: int = 300
-    route_change_penalty_sec: int | None = None
+    transfer_penalty_sec: int = 0
+    route_change_penalty_sec: int | None = 0
     max_wait_sec: int | None = 1200
     state_by: str = "route"
     time_horizon_sec: int = 4 * 3600
@@ -180,12 +204,14 @@ class RoutePlannerRequest:
     graph_cache_path: Path | None = None
     rebuild_graph_cache: bool = False
     symmetric_transfers: bool = False
-    graph_cache_version: int = 7
+    graph_cache_version: int = 8
     heuristic_max_speed_mps: float | None = 55.0
     graph_method: str = DEFAULT_GRAPH_METHOD
     anytime_default_headway_sec: int | None = None
     debug_progress: bool = False
     debug_progress_every: int = 5000
+    max_rounds: int = 8
+    max_major_transfers: int | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +221,8 @@ class RoutePlannerResult:
     context_lines: list[str]
     best_plan: RoutePlan
     itinerary: Itinerary
+    options: tuple[RouteOption, ...]
+    best_option_index: int = 0
 
 
 def find_best_route_and_itinerary(
@@ -236,6 +264,10 @@ def find_best_route_and_itinerary(
         raise SystemExit("--heuristic-max-speed-mps must be > 0 when provided.")
     if request.debug_progress_every <= 0:
         raise SystemExit("--progress-every must be > 0.")
+    if request.max_rounds < 0:
+        raise SystemExit("--max-rounds must be >= 0.")
+    if request.max_major_transfers is not None and request.max_major_transfers < 0:
+        raise SystemExit("--max-major-transfers must be >= 0 when provided.")
     if not request.disable_walking:
         if request.walk_max_distance_m <= 0:
             raise SystemExit("--walk-max-distance-m must be > 0.")
@@ -275,6 +307,7 @@ def find_best_route_and_itinerary(
     if depart_time_sec is None:
         raise SystemExit("Invalid --depart-time. Expected HH:MM:SS.")
 
+    graph_method = normalize_graph_method(request.graph_method)
     rebuild_cache = request.rebuild or request.rebuild_graph_cache
     graph, cache_logs = access_or_create_graph_cache(
         session=session,
@@ -287,117 +320,146 @@ def find_best_route_and_itinerary(
         walk_max_distance_m=request.walk_max_distance_m,
         walk_speed_mps=request.walk_speed_mps,
         walk_max_neighbors=request.walk_max_neighbors,
-        graph_method=request.graph_method,
+        graph_method=graph_method,
         anytime_default_headway_sec=request.anytime_default_headway_sec,
         progress=request.debug_progress,
         progress_every=request.debug_progress_every,
         in_memory_cache=in_memory_graph_cache,
     )
 
-    best_plan: RoutePlan | None = None
+    plan_options: list[_RoutePlanOption] = []
     evaluated_transit_searches = 0
     if request.debug_progress:
         print("Routing progress: evaluating transit graph searches...")
 
-    source_edge_weights, from_candidate_by_node_id = _query_edge_weights_and_candidates(
-        graph=graph,
-        candidates=from_candidates,
-    )
-    sink_edge_weights, to_candidate_by_node_id = _query_edge_weights_and_candidates(
-        graph=graph,
-        candidates=to_candidates,
-    )
-    source_coords = _endpoint_coords_for_heuristic(
-        graph=graph,
-        mode=from_mode,
-        lat=request.from_lat,
-        lon=request.from_lon,
-        candidates=from_candidates,
-    )
-    sink_coords = _endpoint_coords_for_heuristic(
-        graph=graph,
-        mode=to_mode,
-        lat=request.to_lat,
-        lon=request.to_lon,
-        candidates=to_candidates,
-    )
-    if source_edge_weights and sink_edge_weights:
-        query_source_node_id = _make_query_source_node_id("all")
-        query_sink_node_id = _make_query_sink_node_id("all")
-        sink_graph = _QueryAugmentedGraph(
-            base_graph=graph,
-            source_node_id=query_source_node_id,
-            source_edge_weights=source_edge_weights,
-            sink_node_id=query_sink_node_id,
-            sink_edge_weights=sink_edge_weights,
-            source_coords=source_coords,
-            sink_coords=sink_coords,
+    if graph_method == GRAPH_METHOD_RAPTOR:
+        if not isinstance(graph, RaptorTimetable):
+            raise TypeError(
+                "RAPTOR graph_method requires a RaptorTimetable cache object."
+            )
+        plan_options = _find_raptor_plan_options(
+            timetable=graph,
+            request=request,
+            from_candidates=from_candidates,
+            to_candidates=to_candidates,
+            depart_time_sec=depart_time_sec,
         )
         evaluated_transit_searches = 1
-        if (
-            request.debug_progress
-            and evaluated_transit_searches % request.debug_progress_every == 0
-        ):
-            print(
-                "Routing progress: evaluated "
-                f"{evaluated_transit_searches} search(es); no path yet."
+    else:
+        source_edge_weights, from_candidate_by_node_id = (
+            _query_edge_weights_and_candidates(
+                graph=graph,
+                candidates=from_candidates,
             )
-        result = td_dijkstra(
-            graph=sink_graph,
-            start_id=query_source_node_id,
-            goal_id=query_sink_node_id,
-            depart_time_str=request.depart_time,
-            assume_zero_missing=request.assume_zero_missing,
-            transfer_penalty_sec=request.transfer_penalty_sec,
-            route_change_penalty_sec=request.route_change_penalty_sec,
-            time_horizon_sec=request.time_horizon_sec,
-            max_wait_sec=request.max_wait_sec,
-            state_by=request.state_by,
-            heuristic_max_speed_mps=request.heuristic_max_speed_mps,
-            debug_progress=request.debug_progress,
-            debug_progress_every=request.debug_progress_every,
         )
-        if result.arrival_time_sec is not None:
-            result_without_query_nodes = _strip_query_terminals_from_result(
-                result=result,
-                query_source_node_id=query_source_node_id,
-                query_sink_node_id=query_sink_node_id,
+        sink_edge_weights, to_candidate_by_node_id = _query_edge_weights_and_candidates(
+            graph=graph,
+            candidates=to_candidates,
+        )
+        source_coords = _endpoint_coords_for_heuristic(
+            graph=graph,
+            mode=from_mode,
+            lat=request.from_lat,
+            lon=request.from_lon,
+            candidates=from_candidates,
+        )
+        sink_coords = _endpoint_coords_for_heuristic(
+            graph=graph,
+            mode=to_mode,
+            lat=request.to_lat,
+            lon=request.to_lon,
+            candidates=to_candidates,
+        )
+        if source_edge_weights and sink_edge_weights:
+            query_source_node_id = _make_query_source_node_id("all")
+            query_sink_node_id = _make_query_sink_node_id("all")
+            sink_graph = _QueryAugmentedGraph(
+                base_graph=graph,
+                source_node_id=query_source_node_id,
+                source_edge_weights=source_edge_weights,
+                sink_node_id=query_sink_node_id,
+                sink_edge_weights=sink_edge_weights,
+                source_coords=source_coords,
+                sink_coords=sink_coords,
             )
-            first_path_node = (
-                result_without_query_nodes.stop_path[0]
-                if result_without_query_nodes.stop_path
-                else None
-            )
-            last_path_node = (
-                result_without_query_nodes.stop_path[-1]
-                if result_without_query_nodes.stop_path
-                else None
-            )
-            from_candidate = (
-                from_candidate_by_node_id.get(first_path_node)
-                if first_path_node is not None
-                else None
-            )
-            to_candidate = (
-                to_candidate_by_node_id.get(last_path_node)
-                if last_path_node is not None
-                else None
-            )
-            if from_candidate is None:
-                from_candidate = min(
-                    from_candidates, key=lambda candidate: candidate.walk_time_sec
+            evaluated_transit_searches = 1
+            if (
+                request.debug_progress
+                and evaluated_transit_searches % request.debug_progress_every == 0
+            ):
+                print(
+                    "Routing progress: evaluated "
+                    f"{evaluated_transit_searches} search(es); no path yet."
                 )
-            if to_candidate is None:
-                to_candidate = min(
-                    to_candidates, key=lambda candidate: candidate.walk_time_sec
-                )
-            best_plan = RoutePlan(
-                from_candidate=from_candidate,
-                to_candidate=to_candidate,
-                transit_result=result_without_query_nodes,
-                transit_depart_time_sec=depart_time_sec + from_candidate.walk_time_sec,
-                arrival_time_sec=result.arrival_time_sec,
+            result = td_dijkstra(
+                graph=sink_graph,
+                start_id=query_source_node_id,
+                goal_id=query_sink_node_id,
+                depart_time_str=request.depart_time,
+                assume_zero_missing=request.assume_zero_missing,
+                transfer_penalty_sec=request.transfer_penalty_sec,
+                route_change_penalty_sec=request.route_change_penalty_sec,
+                time_horizon_sec=request.time_horizon_sec,
+                max_wait_sec=request.max_wait_sec,
+                state_by=request.state_by,
+                heuristic_max_speed_mps=request.heuristic_max_speed_mps,
+                debug_progress=request.debug_progress,
+                debug_progress_every=request.debug_progress_every,
             )
+            if result.arrival_time_sec is not None:
+                result_without_query_nodes = _strip_query_terminals_from_result(
+                    result=result,
+                    query_source_node_id=query_source_node_id,
+                    query_sink_node_id=query_sink_node_id,
+                )
+                first_path_node = (
+                    result_without_query_nodes.stop_path[0]
+                    if result_without_query_nodes.stop_path
+                    else None
+                )
+                last_path_node = (
+                    result_without_query_nodes.stop_path[-1]
+                    if result_without_query_nodes.stop_path
+                    else None
+                )
+                from_candidate = (
+                    from_candidate_by_node_id.get(first_path_node)
+                    if first_path_node is not None
+                    else None
+                )
+                to_candidate = (
+                    to_candidate_by_node_id.get(last_path_node)
+                    if last_path_node is not None
+                    else None
+                )
+                if from_candidate is None:
+                    from_candidate = min(
+                        from_candidates, key=lambda candidate: candidate.walk_time_sec
+                    )
+                if to_candidate is None:
+                    to_candidate = min(
+                        to_candidates, key=lambda candidate: candidate.walk_time_sec
+                    )
+                best_plan = RoutePlan(
+                    from_candidate=from_candidate,
+                    to_candidate=to_candidate,
+                    transit_result=result_without_query_nodes,
+                    transit_depart_time_sec=depart_time_sec
+                    + from_candidate.walk_time_sec,
+                    arrival_time_sec=result.arrival_time_sec,
+                )
+                plan_options = [
+                    _RoutePlanOption(
+                        best_plan=best_plan,
+                        major_trip_transfers=_count_major_trip_transfers(
+                            best_plan.transit_result
+                        ),
+                        transit_legs=_count_transit_legs(best_plan.transit_result),
+                    )
+                ]
+
+    best_plan_option = _best_route_plan_option(plan_options)
+    best_plan = best_plan_option.best_plan if best_plan_option is not None else None
 
     if request.debug_progress:
         if best_plan is None:
@@ -417,60 +479,88 @@ def find_best_route_and_itinerary(
     if best_plan is None:
         raise SystemExit("No path found for the provided endpoints.")
 
-    itinerary_result = _with_coordinate_walks(
-        plan=best_plan,
-        from_mode=from_mode,
-        to_mode=to_mode,
-    )
+    sorted_plan_options = _sort_route_plan_options_for_display(plan_options)
+    route_option_inputs: list[tuple[_RoutePlanOption, PathResult, dict[str, str]]] = []
+    all_display_stop_ids: set[str] = set()
+    for plan_option in sorted_plan_options:
+        itinerary_result = _with_coordinate_walks(
+            plan=plan_option.best_plan,
+            from_mode=from_mode,
+            to_mode=to_mode,
+        )
+        display_stop_ids = _display_stop_ids_for_path(
+            graph=graph,
+            stop_ids=itinerary_result.stop_path,
+        )
+        route_option_inputs.append(
+            (
+                plan_option,
+                itinerary_result,
+                display_stop_ids,
+            )
+        )
+        all_display_stop_ids.update(display_stop_ids.values())
 
-    display_stop_ids = _display_stop_ids_for_path(
-        graph=graph,
-        stop_ids=itinerary_result.stop_path,
-    )
     stop_names_raw, stop_coords_raw, route_short_names = create_itinerary_data(
         session=session,
         feed_id=feed_id,
-        stop_ids=sorted(set(display_stop_ids.values())),
+        stop_ids=sorted(all_display_stop_ids),
     )
-    stop_names = {
-        stop_id: stop_names_raw.get(display_stop_id, display_stop_id)
-        for stop_id, display_stop_id in display_stop_ids.items()
-    }
-    stop_coords = {
-        stop_id: stop_coords_raw[display_stop_id]
-        for stop_id, display_stop_id in display_stop_ids.items()
-        if display_stop_id in stop_coords_raw
-    }
 
     from_stop_label = best_plan.from_candidate.parent_name
     to_stop_label = best_plan.to_candidate.parent_name
     if from_mode == "coords":
         from_stop_label = _format_coord_label(request.from_lat, request.from_lon)
-        stop_names[COORD_ORIGIN_STOP_ID] = from_stop_label
-        if request.from_lat is not None and request.from_lon is not None:
-            stop_coords[COORD_ORIGIN_STOP_ID] = (
-                float(request.from_lat),
-                float(request.from_lon),
-            )
     if to_mode == "coords":
         to_stop_label = _format_coord_label(request.to_lat, request.to_lon)
-        stop_names[COORD_DEST_STOP_ID] = to_stop_label
-        if request.to_lat is not None and request.to_lon is not None:
-            stop_coords[COORD_DEST_STOP_ID] = (
-                float(request.to_lat),
-                float(request.to_lon),
-            )
 
-    itinerary = create_itinerary(
-        result=itinerary_result,
-        from_stop_name=from_stop_label,
-        to_stop_name=to_stop_label,
-        depart_time_str=request.depart_time,
-        stop_names=stop_names,
-        stop_coords=stop_coords,
-        route_short_names=route_short_names,
-        transfer_penalty_sec=request.transfer_penalty_sec,
-    )
+    route_options: list[RouteOption] = []
+    for plan_option, itinerary_result, display_stop_ids in route_option_inputs:
+        stop_names = {
+            stop_id: stop_names_raw.get(display_stop_id, display_stop_id)
+            for stop_id, display_stop_id in display_stop_ids.items()
+        }
+        stop_coords = {
+            stop_id: stop_coords_raw[display_stop_id]
+            for stop_id, display_stop_id in display_stop_ids.items()
+            if display_stop_id in stop_coords_raw
+        }
+        if from_mode == "coords":
+            stop_names[COORD_ORIGIN_STOP_ID] = from_stop_label
+            if request.from_lat is not None and request.from_lon is not None:
+                stop_coords[COORD_ORIGIN_STOP_ID] = (
+                    float(request.from_lat),
+                    float(request.from_lon),
+                )
+        if to_mode == "coords":
+            stop_names[COORD_DEST_STOP_ID] = to_stop_label
+            if request.to_lat is not None and request.to_lon is not None:
+                stop_coords[COORD_DEST_STOP_ID] = (
+                    float(request.to_lat),
+                    float(request.to_lon),
+                )
+
+        itinerary = create_itinerary(
+            result=itinerary_result,
+            from_stop_name=from_stop_label,
+            to_stop_name=to_stop_label,
+            depart_time_str=request.depart_time,
+            stop_names=stop_names,
+            stop_coords=stop_coords,
+            route_short_names=route_short_names,
+            transfer_penalty_sec=request.transfer_penalty_sec,
+        )
+        route_options.append(
+            RouteOption(
+                best_plan=plan_option.best_plan,
+                itinerary=itinerary,
+                major_trip_transfers=plan_option.major_trip_transfers,
+                transit_legs=plan_option.transit_legs,
+            )
+        )
+
+    best_option_index = _best_route_option_index(route_options)
+    itinerary = route_options[best_option_index].itinerary
 
     context_lines: list[str] = []
     if coords_requested:
@@ -483,6 +573,8 @@ def find_best_route_and_itinerary(
         context_lines.append(
             f"Evaluated transit graph search(es): {evaluated_transit_searches}."
         )
+    if len(route_options) > 1:
+        context_lines.append(f"Pareto-optimal route options: {len(route_options)}.")
     if from_mode == "coords":
         context_lines.append(
             "Access walk: "
@@ -506,7 +598,93 @@ def find_best_route_and_itinerary(
         context_lines=context_lines,
         best_plan=best_plan,
         itinerary=itinerary,
+        options=tuple(route_options),
+        best_option_index=best_option_index,
     )
+
+
+def _find_raptor_plan_options(
+    *,
+    timetable: RaptorTimetable,
+    request: RoutePlannerRequest,
+    from_candidates: list[EndpointCandidate],
+    to_candidates: list[EndpointCandidate],
+    depart_time_sec: int,
+) -> list[_RoutePlanOption]:
+    effective_transfer_penalty_sec = request.route_change_penalty_sec or 0
+    source_candidates = tuple(
+        RaptorSourceCandidate(
+            stop_id=candidate.parent_id,
+            access_time_sec=candidate.walk_time_sec,
+        )
+        for candidate in from_candidates
+    )
+    target_candidates = tuple(
+        RaptorTargetCandidate(
+            stop_id=candidate.parent_id,
+            egress_time_sec=candidate.walk_time_sec,
+        )
+        for candidate in to_candidates
+    )
+    result = run_raptor(
+        timetable=timetable,
+        query=RaptorQuery(
+            source_candidates=source_candidates,
+            target_candidates=target_candidates,
+            departure_time_sec=depart_time_sec,
+            max_rounds=_resolve_effective_max_rounds(request),
+            transfer_penalty_sec=effective_transfer_penalty_sec,
+            max_wait_sec=request.max_wait_sec,
+            time_horizon_sec=request.time_horizon_sec,
+        ),
+    )
+    if not result.options:
+        return []
+
+    from_candidate_by_stop_id = _candidate_by_parent_stop_id(from_candidates)
+    to_candidate_by_stop_id = _candidate_by_parent_stop_id(to_candidates)
+    plan_options: list[_RoutePlanOption] = []
+    for option in result.options:
+        path_result = option.path_result
+        first_path_stop_id = path_result.stop_path[0] if path_result.stop_path else None
+        last_path_stop_id = path_result.stop_path[-1] if path_result.stop_path else None
+        from_candidate = (
+            from_candidate_by_stop_id.get(first_path_stop_id)
+            if first_path_stop_id is not None
+            else None
+        )
+        to_candidate = (
+            to_candidate_by_stop_id.get(last_path_stop_id)
+            if last_path_stop_id is not None
+            else None
+        )
+        if from_candidate is None:
+            from_candidate = min(
+                from_candidates,
+                key=lambda candidate: candidate.walk_time_sec,
+            )
+        if to_candidate is None:
+            to_candidate = min(
+                to_candidates,
+                key=lambda candidate: candidate.walk_time_sec,
+            )
+
+        plan_options.append(
+            _RoutePlanOption(
+                best_plan=RoutePlan(
+                    from_candidate=from_candidate,
+                    to_candidate=to_candidate,
+                    transit_result=path_result,
+                    transit_depart_time_sec=depart_time_sec
+                    + from_candidate.walk_time_sec,
+                    arrival_time_sec=path_result.arrival_time_sec,
+                ),
+                major_trip_transfers=option.major_trip_transfers,
+                transit_legs=option.transit_legs,
+            )
+        )
+
+    return plan_options
 
 
 def _with_coordinate_walks(
@@ -803,6 +981,7 @@ def _endpoint_coords_for_heuristic(
 def _display_stop_ids_for_path(*, graph, stop_ids: list[str]) -> dict[str, str]:
     display_stop_ids: dict[str, str] = {}
     graph_nodes = getattr(graph, "nodes", None)
+    uses_route_stop_nodes = hasattr(graph, "route_stop_ids_for_stop")
     for stop_id in stop_ids:
         if stop_id in {COORD_ORIGIN_STOP_ID, COORD_DEST_STOP_ID}:
             continue
@@ -815,7 +994,87 @@ def _display_stop_ids_for_path(*, graph, stop_ids: list[str]) -> dict[str, str]:
                 node_stop_id = node_data.get("stop_id")
                 if isinstance(node_stop_id, str) and node_stop_id:
                     display_stop_id = node_stop_id
-        if display_stop_id == stop_id and "::" in stop_id:
-            display_stop_id = stop_id.split("::", 1)[0]
+        if display_stop_id == stop_id and uses_route_stop_nodes:
+            display_stop_id = _fallback_display_stop_id(stop_id)
         display_stop_ids[stop_id] = display_stop_id
     return display_stop_ids
+
+
+def _fallback_display_stop_id(stop_id: str) -> str:
+    display_stop_id = stop_id
+    if display_stop_id.startswith("__same_stop_transfer__"):
+        display_stop_id = display_stop_id.replace("__same_stop_transfer__", "", 1)
+    base_stop_id, separator, suffix = display_stop_id.rpartition("::")
+    if separator and base_stop_id and suffix:
+        return base_stop_id
+    return display_stop_id
+
+
+def _candidate_by_parent_stop_id(
+    candidates: list[EndpointCandidate],
+) -> dict[str, EndpointCandidate]:
+    candidate_by_stop_id: dict[str, EndpointCandidate] = {}
+    for candidate in candidates:
+        existing = candidate_by_stop_id.get(candidate.parent_id)
+        if existing is None or candidate.walk_time_sec < existing.walk_time_sec:
+            candidate_by_stop_id[candidate.parent_id] = candidate
+    return candidate_by_stop_id
+
+
+def _count_transit_legs(result: PathResult) -> int:
+    return sum(1 for edge in result.edge_path if getattr(edge, "kind", None) == "trip")
+
+
+def _count_major_trip_transfers(result: PathResult) -> int:
+    return max(_count_transit_legs(result) - 1, 0)
+
+
+def _best_route_plan_option(
+    plan_options: list[_RoutePlanOption],
+) -> _RoutePlanOption | None:
+    if not plan_options:
+        return None
+    return min(
+        plan_options,
+        key=lambda option: (
+            option.best_plan.arrival_time_sec,
+            option.major_trip_transfers,
+            option.transit_legs,
+        ),
+    )
+
+
+def _best_route_option_index(route_options: list[RouteOption]) -> int:
+    if not route_options:
+        return 0
+    return min(
+        range(len(route_options)),
+        key=lambda index: (
+            route_options[index].best_plan.arrival_time_sec,
+            route_options[index].major_trip_transfers,
+            route_options[index].transit_legs,
+        ),
+    )
+
+
+def _sort_route_plan_options_for_display(
+    plan_options: list[_RoutePlanOption],
+) -> list[_RoutePlanOption]:
+    return sorted(
+        plan_options,
+        key=lambda option: (
+            -option.best_plan.arrival_time_sec,
+            option.major_trip_transfers,
+            option.transit_legs,
+        ),
+    )
+
+
+def _resolve_effective_max_rounds(request: RoutePlannerRequest) -> int:
+    effective_max_rounds = request.max_rounds
+    if request.max_major_transfers is not None:
+        effective_max_rounds = min(
+            effective_max_rounds,
+            request.max_major_transfers + 1,
+        )
+    return effective_max_rounds

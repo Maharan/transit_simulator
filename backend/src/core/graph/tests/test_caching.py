@@ -331,3 +331,32 @@ def test_access_or_create_graph_cache_builds_trip_stop_anytime_graph(
     assert graph == expected_graph
     assert captured["kwargs"]["default_headway_sec"] == 900
     assert any("Built trip-stop anytime graph from GTFS." in line for line in log_lines)
+
+
+def test_access_or_create_graph_cache_builds_raptor_timetable(
+    monkeypatch,
+) -> None:
+    expected_graph = {"graph": "raptor"}
+
+    monkeypatch.setattr(
+        caching_module,
+        "build_raptor_timetable_from_gtfs",
+        lambda **_kwargs: expected_graph,
+    )
+
+    graph, log_lines = caching_module.access_or_create_graph_cache(
+        session="db-session",
+        feed_id="feed-1",
+        cache_path=None,
+        graph_cache_version=6,
+        rebuild_cache=False,
+        symmetric_transfers=True,
+        enable_walking=True,
+        walk_max_distance_m=500,
+        walk_speed_mps=1.4,
+        walk_max_neighbors=8,
+        graph_method="raptor",
+    )
+
+    assert graph == expected_graph
+    assert any("Built RAPTOR timetable from GTFS." in line for line in log_lines)

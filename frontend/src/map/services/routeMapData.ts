@@ -1,4 +1,6 @@
-import type { RouteResponse } from '../types/route.types'
+import type { SelectedCoordinatePoint } from '../types/coordinates.types'
+import type { PathSegmentResponse, RouteResponse } from '../types/route.types'
+import { getSelectedRouteOption } from './routeOptions'
 
 type LngLat = [number, number]
 
@@ -14,9 +16,11 @@ type PointGeometry = {
 
 type Geometry = LineGeometry | PointGeometry
 
+type FeaturePropertyValue = string | number | boolean | null
+
 type Feature<TGeometry extends Geometry = Geometry> = {
   type: 'Feature'
-  properties: Record<string, string>
+  properties: Record<string, FeaturePropertyValue>
   geometry: TGeometry
 }
 
@@ -30,7 +34,19 @@ type RouteMapData = {
   stopCollection: FeatureCollection<PointGeometry>
   endpointCollection: FeatureCollection<PointGeometry>
   bounds: [LngLat, LngLat] | null
+  shouldAutoFit: boolean
 }
+
+const TRANSIT_LEG_COLORS = [
+  '#005AAE',
+  '#E85D04',
+  '#0F766E',
+  '#B91C1C',
+  '#7C3AED',
+  '#CA8A04',
+  '#0891B2',
+  '#BE123C',
+] as const
 
 function isLngLatPoint(value: unknown): value is LngLat {
   if (!Array.isArray(value) || value.length < 2) {
@@ -107,7 +123,66 @@ function finalizeBounds(tracker: BoundsTracker): [LngLat, LngLat] | null {
   ]
 }
 
-function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
+function normalizeHexColor(value: string | null | undefined): string | null {
+  if (!value) {
+    return null
+  }
+  const normalized = value.trim().toUpperCase()
+  if (!/^#[0-9A-F]{6}$/.test(normalized)) {
+    return null
+  }
+  return normalized
+}
+
+function transitLegKey(segment: PathSegmentResponse): string {
+  return (
+    segment.edge.trip_id ??
+    segment.edge.route_id ??
+    segment.edge.route ??
+    `${segment.from_stop.stop_id}:${segment.to_stop.stop_id}`
+  )
+}
+
+function pickTransitLegColor({
+  preferredColor,
+  transitLegIndex,
+  previousTransitLegColor,
+}: {
+  preferredColor: string | null
+  transitLegIndex: number
+  previousTransitLegColor: string | null
+}): string {
+  const paletteColor =
+    TRANSIT_LEG_COLORS[transitLegIndex % TRANSIT_LEG_COLORS.length]
+
+  if (
+    preferredColor &&
+    preferredColor !== previousTransitLegColor
+  ) {
+    return preferredColor
+  }
+
+  if (paletteColor !== previousTransitLegColor) {
+    return paletteColor
+  }
+
+  return TRANSIT_LEG_COLORS[
+    (transitLegIndex + 1) % TRANSIT_LEG_COLORS.length
+  ]
+}
+
+function buildRouteMapData(
+  routeResult: RouteResponse | null,
+  {
+    selectedRouteOptionIndex = null,
+    selectedFromPoint = null,
+    selectedToPoint = null,
+  }: {
+    selectedRouteOptionIndex?: number | null
+    selectedFromPoint?: SelectedCoordinatePoint | null
+    selectedToPoint?: SelectedCoordinatePoint | null
+  } = {},
+): RouteMapData {
   const lineCollection: FeatureCollection<LineGeometry> = {
     type: 'FeatureCollection',
     features: [],
@@ -123,15 +198,67 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
   const boundsTracker = createBoundsTracker()
 
   if (!routeResult) {
+    if (selectedFromPoint) {
+      const point: LngLat = [selectedFromPoint.lon, selectedFromPoint.lat]
+      endpointCollection.features.push({
+        type: 'Feature',
+        properties: {
+          endpointRole: 'start',
+          stopName: 'Selected origin',
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: point,
+        },
+      })
+      extendBounds(boundsTracker, point)
+    }
+
+    if (selectedToPoint) {
+      const point: LngLat = [selectedToPoint.lon, selectedToPoint.lat]
+      endpointCollection.features.push({
+        type: 'Feature',
+        properties: {
+          endpointRole: 'end',
+          stopName: 'Selected destination',
+        },
+        geometry: {
+          type: 'Point',
+          coordinates: point,
+        },
+      })
+      extendBounds(boundsTracker, point)
+    }
+
     return {
       lineCollection,
       stopCollection,
       endpointCollection,
-      bounds: null,
+      bounds: finalizeBounds(boundsTracker),
+      shouldAutoFit: false,
     }
   }
 
-  for (const segment of routeResult.itinerary.path_segments) {
+  const selectedRouteOption = getSelectedRouteOption(
+    routeResult,
+    selectedRouteOptionIndex,
+  )
+  if (!selectedRouteOption) {
+    return {
+      lineCollection,
+      stopCollection,
+      endpointCollection,
+      bounds: finalizeBounds(boundsTracker),
+      shouldAutoFit: false,
+    }
+  }
+
+  let currentTransitLegKey: string | null = null
+  let currentTransitLegColor: string | null = null
+  let previousTransitLegColor: string | null = null
+  let transitLegIndex = -1
+
+  for (const segment of selectedRouteOption.itinerary.path_segments) {
     let coordinates: LngLat[] = []
     if (Array.isArray(segment.geometry)) {
       coordinates = segment.geometry.filter(isLngLatPoint)
@@ -147,11 +274,39 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
       continue
     }
 
+    const isTransitSegment =
+      segment.edge.kind === 'trip' || segment.edge.kind === 'ride'
+    let lineColor: string | null = null
+    let segmentTransitLegIndex: number | null = null
+
+    if (isTransitSegment) {
+      const nextTransitLegKey = transitLegKey(segment)
+      if (nextTransitLegKey !== currentTransitLegKey) {
+        transitLegIndex += 1
+        currentTransitLegKey = nextTransitLegKey
+        currentTransitLegColor = pickTransitLegColor({
+          preferredColor: normalizeHexColor(segment.edge.display_color),
+          transitLegIndex,
+          previousTransitLegColor,
+        })
+        previousTransitLegColor = currentTransitLegColor
+      }
+      lineColor = currentTransitLegColor
+      segmentTransitLegIndex = transitLegIndex
+    } else {
+      currentTransitLegKey = null
+      currentTransitLegColor = null
+    }
+
     lineCollection.features.push({
       type: 'Feature',
       properties: {
         edgeKind: segment.edge.kind,
         edgeLabel: segment.edge.label ?? '',
+        lineColor,
+        transitLegIndex: segmentTransitLegIndex,
+        routeId: segment.edge.route_id ?? '',
+        routeShortName: segment.edge.route ?? '',
       },
       geometry: {
         type: 'LineString',
@@ -163,7 +318,7 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
     }
   }
 
-  for (const stop of routeResult.itinerary.stops) {
+  for (const stop of selectedRouteOption.itinerary.stops) {
     const point = stopToPoint(stop)
     if (!point) {
       continue
@@ -182,36 +337,49 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
     extendBounds(boundsTracker, point)
   }
 
-  const firstStop = routeResult.itinerary.stops[0]
-  const lastStop = routeResult.itinerary.stops[routeResult.itinerary.stops.length - 1]
-  const firstPoint = firstStop ? stopToPoint(firstStop) : null
-  const lastPoint = lastStop ? stopToPoint(lastStop) : null
+  const firstStop = selectedRouteOption.itinerary.stops[0]
+  const lastStop =
+    selectedRouteOption.itinerary.stops[
+      selectedRouteOption.itinerary.stops.length - 1
+    ]
+  const firstPoint = selectedFromPoint
+    ? ([selectedFromPoint.lon, selectedFromPoint.lat] as LngLat)
+    : firstStop
+      ? stopToPoint(firstStop)
+      : null
+  const lastPoint = selectedToPoint
+    ? ([selectedToPoint.lon, selectedToPoint.lat] as LngLat)
+    : lastStop
+      ? stopToPoint(lastStop)
+      : null
 
-  if (firstStop && firstPoint) {
+  if (firstPoint) {
     endpointCollection.features.push({
       type: 'Feature',
       properties: {
         endpointRole: 'start',
-        stopName: firstStop.stop_name,
+        stopName: selectedFromPoint ? 'Selected origin' : (firstStop?.stop_name ?? 'Start'),
       },
       geometry: {
         type: 'Point',
         coordinates: firstPoint,
       },
     })
+    extendBounds(boundsTracker, firstPoint)
   }
-  if (lastStop && lastPoint) {
+  if (lastPoint) {
     endpointCollection.features.push({
       type: 'Feature',
       properties: {
         endpointRole: 'end',
-        stopName: lastStop.stop_name,
+        stopName: selectedToPoint ? 'Selected destination' : (lastStop?.stop_name ?? 'End'),
       },
       geometry: {
         type: 'Point',
         coordinates: lastPoint,
       },
     })
+    extendBounds(boundsTracker, lastPoint)
   }
 
   return {
@@ -219,6 +387,7 @@ function buildRouteMapData(routeResult: RouteResponse | null): RouteMapData {
     stopCollection,
     endpointCollection,
     bounds: finalizeBounds(boundsTracker),
+    shouldAutoFit: true,
   }
 }
 

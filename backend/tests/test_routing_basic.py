@@ -96,7 +96,7 @@ def test_td_dijkstra_debug_progress_prints(capsys) -> None:
         debug_progress_every=1,
     )
 
-    assert result.arrival_time_sec == 9 * 3600 + 360
+    assert result.arrival_time_sec == 9 * 3600 + 60
     output = capsys.readouterr().out
     assert "Dijkstra progress: searching A -> B from 09:00:00." in output
     assert "Dijkstra progress: expanded 1 state(s)" in output
@@ -317,3 +317,45 @@ def test_td_dijkstra_haversine_heuristic_keeps_optimal_path() -> None:
     )
     assert result.arrival_time_sec == 9 * 3600 + 60
     assert result.stop_path == ["A", "B"]
+
+
+def test_td_dijkstra_does_not_treat_transfer_penalty_as_route_change_penalty() -> None:
+    graph = _OverrideEdgeModeGraph(
+        {
+            "A": [
+                _Edge(
+                    to_stop_id="B",
+                    weight_sec=60,
+                    kind="ride",
+                    route_id="R1",
+                    trip_id="trip-1",
+                    dep_time_sec=9 * 3600,
+                    arr_time_sec=9 * 3600 + 60,
+                )
+            ],
+            "B": [
+                _Edge(
+                    to_stop_id="C",
+                    weight_sec=60,
+                    kind="ride",
+                    route_id="R2",
+                    trip_id="trip-2",
+                    dep_time_sec=9 * 3600 + 60,
+                    arr_time_sec=9 * 3600 + 120,
+                )
+            ],
+            "C": [],
+        }
+    )
+
+    result = td_dijkstra(
+        graph=graph,
+        start_id="A",
+        goal_id="C",
+        depart_time_str="09:00:00",
+        transfer_penalty_sec=300,
+        route_change_penalty_sec=None,
+    )
+
+    assert result.arrival_time_sec == 9 * 3600 + 120
+    assert result.stop_path == ["A", "B", "C"]

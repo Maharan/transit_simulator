@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from core.gtfs.models import Shape, Stop, StopTime, Trip
+from math import cos, radians
+
+from core.gtfs.models import Route, Shape, Stop, StopTime, Trip
+
+
+METERS_PER_LATITUDE_DEGREE = 111_320.0
 
 
 @dataclass(frozen=True)
@@ -24,9 +29,29 @@ def _base_stop_id(stop_id: str | None) -> str | None:
         return None
     if stop_id.startswith("__same_stop_transfer__"):
         stop_id = stop_id.replace("__same_stop_transfer__", "", 1)
-    if "::" in stop_id:
-        return stop_id.split("::", 1)[0]
+    pattern_index = stop_id.rfind("::pattern_")
+    if pattern_index != -1:
+        return stop_id[:pattern_index]
     return stop_id
+
+
+def _stop_id_candidates(stop_id: str | None) -> tuple[str, ...]:
+    if not stop_id:
+        return ()
+    candidates: list[str] = []
+
+    def add(candidate: str | None) -> None:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    add(stop_id)
+    normalized_stop_id = _base_stop_id(stop_id)
+    add(normalized_stop_id)
+    if normalized_stop_id:
+        base_stop_id, separator, suffix = normalized_stop_id.rpartition("::")
+        if separator and base_stop_id and suffix:
+            add(base_stop_id)
+    return tuple(candidates)
 
 
 def _squared_distance(
@@ -122,7 +147,46 @@ def _segment_fallback_geometry(segment: dict[str, Any]) -> list[list[float]] | N
         for value in [from_lon, from_lat, to_lon, to_lat]
     ):
         return None
+    edge = segment.get("edge")
+    if (
+        isinstance(edge, dict)
+        and edge.get("kind") == "transfer"
+        and float(from_lon) == float(to_lon)
+        and float(from_lat) == float(to_lat)
+    ):
+        return _self_transfer_loop_geometry(
+            lon=float(from_lon),
+            lat=float(from_lat),
+        )
     return [[float(from_lon), float(from_lat)], [float(to_lon), float(to_lat)]]
+
+
+def _normalize_route_color(route_color: str | None) -> str | None:
+    if not route_color:
+        return None
+    normalized = route_color.strip().lstrip("#")
+    if len(normalized) != 6:
+        return None
+    if not all(char in "0123456789ABCDEFabcdef" for char in normalized):
+        return None
+    return f"#{normalized.upper()}"
+
+
+def _self_transfer_loop_geometry(*, lon: float, lat: float) -> list[list[float]]:
+    radius_m = 36.0
+    lat_offset = radius_m / METERS_PER_LATITUDE_DEGREE
+    lon_offset = radius_m / max(
+        METERS_PER_LATITUDE_DEGREE * cos(radians(lat)),
+        1e-6,
+    )
+    return [
+        [lon, lat],
+        [lon + lon_offset, lat + lat_offset * 0.45],
+        [lon + lon_offset * 0.25, lat + lat_offset * 1.2],
+        [lon - lon_offset * 0.65, lat + lat_offset * 0.95],
+        [lon - lon_offset * 0.4, lat + lat_offset * 0.15],
+        [lon, lat],
+    ]
 
 
 def _find_trip_stop_pair(
@@ -138,6 +202,35 @@ def _find_trip_stop_pair(
             to_point = trip_stop_points[to_index]
             if to_point.stop_id == to_stop_id:
                 return from_point, to_point
+    return None
+
+
+def _find_trip_stop_pair_from_candidates(
+    *,
+    trip_stop_points: list[TripStopProfilePoint],
+    from_stop_ids: tuple[str, ...],
+    to_stop_ids: tuple[str, ...],
+) -> tuple[TripStopProfilePoint, TripStopProfilePoint] | None:
+    for from_stop_id in from_stop_ids:
+        for to_stop_id in to_stop_ids:
+            stop_pair = _find_trip_stop_pair(
+                trip_stop_points=trip_stop_points,
+                from_stop_id=from_stop_id,
+                to_stop_id=to_stop_id,
+            )
+            if stop_pair is not None:
+                return stop_pair
+    return None
+
+
+def _first_stop_coord(
+    stop_coords: dict[str, tuple[float, float]],
+    stop_ids: tuple[str, ...],
+) -> tuple[float, float] | None:
+    for stop_id in stop_ids:
+        coords = stop_coords.get(stop_id)
+        if coords is not None:
+            return coords
     return None
 
 
@@ -163,18 +256,18 @@ def _trip_segment_geometry(
     if not isinstance(from_stop, dict) or not isinstance(to_stop, dict):
         return None
 
-    from_stop_id = _base_stop_id(from_stop.get("stop_id"))
-    to_stop_id = _base_stop_id(to_stop.get("stop_id"))
-    if not from_stop_id or not to_stop_id:
+    from_stop_ids = _stop_id_candidates(from_stop.get("stop_id"))
+    to_stop_ids = _stop_id_candidates(to_stop.get("stop_id"))
+    if not from_stop_ids or not to_stop_ids:
         return None
 
     trip_stops = trip_stop_points_by_trip_id.get(trip_id)
     if not trip_stops:
         return None
-    stop_pair = _find_trip_stop_pair(
+    stop_pair = _find_trip_stop_pair_from_candidates(
         trip_stop_points=trip_stops,
-        from_stop_id=from_stop_id,
-        to_stop_id=to_stop_id,
+        from_stop_ids=from_stop_ids,
+        to_stop_ids=to_stop_ids,
     )
     if stop_pair is None:
         return None
@@ -191,8 +284,8 @@ def _trip_segment_geometry(
         shape_points=shape_points,
         from_shape_dist=from_stop_point.shape_dist_traveled,
         to_shape_dist=to_stop_point.shape_dist_traveled,
-        from_coord=stop_coords.get(from_stop_id),
-        to_coord=stop_coords.get(to_stop_id),
+        from_coord=_first_stop_coord(stop_coords, from_stop_ids),
+        to_coord=_first_stop_coord(stop_coords, to_stop_ids),
     )
     if len(segment_shape) >= 2:
         return segment_shape
@@ -207,6 +300,42 @@ def attach_path_segment_geometries(
 ) -> None:
     if not path_segments:
         return
+
+    route_ids = {
+        edge.get("route_id")
+        for segment in path_segments
+        for edge in [segment.get("edge")]
+        if isinstance(edge, dict)
+        and isinstance(edge.get("route_id"), str)
+        and edge.get("route_id")
+    }
+    route_rows = (
+        session.query(Route.route_id, Route.route_color, Route.route_text_color)
+        .filter(Route.feed_id == feed_id)
+        .filter(Route.route_id.in_(sorted(route_ids)))
+        .all()
+        if route_ids
+        else []
+    )
+    route_color_by_route_id = {
+        route_id: _normalize_route_color(route_color)
+        for route_id, route_color, _route_text_color in route_rows
+        if isinstance(route_id, str)
+    }
+    route_text_color_by_route_id = {
+        route_id: _normalize_route_color(route_text_color)
+        for route_id, _route_color, route_text_color in route_rows
+        if isinstance(route_id, str)
+    }
+    for segment in path_segments:
+        edge = segment.get("edge")
+        if not isinstance(edge, dict):
+            continue
+        route_id = edge.get("route_id")
+        if not isinstance(route_id, str):
+            continue
+        edge["display_color"] = route_color_by_route_id.get(route_id)
+        edge["display_text_color"] = route_text_color_by_route_id.get(route_id)
 
     trip_ids = {
         edge.get("trip_id")

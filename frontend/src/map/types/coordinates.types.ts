@@ -6,5 +6,14 @@ type CoordinateInput = {
   lon: string
 }
 
+type SelectedCoordinatePoint = {
+  lat: number
+  lon: number
+}
 
-export type { CoordinateField, Endpoint, CoordinateInput }
+export type {
+  CoordinateField,
+  Endpoint,
+  CoordinateInput,
+  SelectedCoordinatePoint,
+}

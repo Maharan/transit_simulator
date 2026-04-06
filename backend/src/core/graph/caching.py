@@ -11,21 +11,25 @@ from core.graph.graph_methods.trip_stop_anytime_graph import (
 )
 from core.graph.graph_methods.trip_stop_graph import build_trip_stop_graph_from_gtfs
 from core.graph.lite import GraphLite
+from core.routing.raptor import build_raptor_timetable_from_gtfs
 
 GRAPH_METHOD_TRIP_STOP = "trip_stop"
 GRAPH_METHOD_MULTI_EDGE = "multi_edge"
 GRAPH_METHOD_TRIP_STOP_ANYTIME = "trip_stop_anytime"
+GRAPH_METHOD_RAPTOR = "raptor"
 DEFAULT_GRAPH_METHOD = GRAPH_METHOD_TRIP_STOP
 SUPPORTED_GRAPH_METHODS: tuple[str, ...] = (
     GRAPH_METHOD_TRIP_STOP,
     GRAPH_METHOD_MULTI_EDGE,
     GRAPH_METHOD_TRIP_STOP_ANYTIME,
+    GRAPH_METHOD_RAPTOR,
 )
 
 GRAPH_METHOD_ALIASES: dict[str, str] = {
     "trip_stop_schedule": GRAPH_METHOD_TRIP_STOP,
     "trip_stop_graph": GRAPH_METHOD_TRIP_STOP,
     "multi_edge_graph": GRAPH_METHOD_MULTI_EDGE,
+    "raptor_timetable": GRAPH_METHOD_RAPTOR,
 }
 
 
@@ -262,6 +266,19 @@ def access_or_create_graph_cache(
                 progress_every=progress_every,
             )
             log_lines.append("Built trip-stop anytime graph from GTFS.")
+        elif graph_method == GRAPH_METHOD_RAPTOR:
+            graph = build_raptor_timetable_from_gtfs(
+                session=session,
+                feed_id=feed_id,
+                symmetric_transfers=symmetric_transfers,
+                enable_walking=enable_walking,
+                walk_max_distance_m=walk_max_distance_m,
+                walk_speed_mps=walk_speed_mps,
+                walk_max_neighbors=walk_max_neighbors,
+                progress=progress,
+                progress_every=progress_every,
+            )
+            log_lines.append("Built RAPTOR timetable from GTFS.")
         else:  # pragma: no cover - normalize_graph_method guards this.
             raise ValueError(f"Unsupported graph_method '{graph_method}'.")
         if cache_path:

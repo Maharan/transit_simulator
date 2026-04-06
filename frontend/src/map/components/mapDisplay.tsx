@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  type MutableRefObject,
+} from 'react'
 import maplibregl from 'maplibre-gl'
 
 import './mapDisplay.css'
 import { fetchFloorSpaceDensity } from '../services/floorSpaceApi'
 import { fetchRapidTransitNetworkLines } from '../services/networkLinesApi'
 import {
+  ENDPOINT_LAYER_ID,
   ENDPOINT_SOURCE_ID,
   POPULATION_HEATMAP_LAYER_ID,
   POPULATION_HEATMAP_SOURCE_ID,
   POPULATION_SURFACE_COLOR_STOPS,
   RAPID_TRANSIT_NETWORK_SOURCE_ID,
   ROUTE_SOURCE_ID,
+  STOP_LAYER_ID,
   STOP_SOURCE_ID,
   addPopulationHeatmapSourceAndLayer,
   addRapidTransitNetworkSourceAndLayers,
@@ -21,6 +29,7 @@ import {
 } from '../services/mapLayerConfig'
 import { OSM_RASTER_STYLE } from '../services/mapStyle'
 import { buildRouteMapData } from '../services/routeMapData'
+import type { SelectedCoordinatePoint } from '../types/coordinates.types'
 import type {
   FloorSpaceDensityFeature,
   FloorSpaceDensityFeatureCollection,
@@ -78,28 +87,52 @@ const EMPTY_NETWORK_LINE_FEATURE_COLLECTION: NetworkLineFeatureCollection = {
 
 type MapDisplayProps = {
   routeResult: RouteResponse | null
+  selectedRouteOptionIndex: number | null
   showPopulationHeatmap: boolean
   showRapidTransitLines: boolean
+  selectedFromPoint: SelectedCoordinatePoint | null
+  selectedToPoint: SelectedCoordinatePoint | null
+  onMapCoordinateSelect: (point: SelectedCoordinatePoint) => void
 }
 
 function MapDisplay({
   routeResult,
+  selectedRouteOptionIndex,
   showPopulationHeatmap,
   showRapidTransitLines,
+  selectedFromPoint,
+  selectedToPoint,
+  onMapCoordinateSelect,
 }: MapDisplayProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const routeMapDataRef = useRef(buildRouteMapData(routeResult))
+  const routeMapDataRef = useRef(
+    buildRouteMapData(routeResult, {
+      selectedRouteOptionIndex,
+      selectedFromPoint,
+      selectedToPoint,
+    }),
+  )
   const showPopulationHeatmapRef = useRef(showPopulationHeatmap)
   const showRapidTransitLinesRef = useRef(showRapidTransitLines)
   const heatmapRequestRef = useRef<AbortController | null>(null)
   const rapidTransitRequestRef = useRef<AbortController | null>(null)
   const hasLoadedRapidTransitNetworkRef = useRef(false)
   const populationSurfacePopupRef = useRef<maplibregl.Popup | null>(null)
+  const handleMapCoordinateSelect = useEffectEvent(
+    (point: SelectedCoordinatePoint) => {
+      onMapCoordinateSelect(point)
+    },
+  )
 
   const routeMapData = useMemo(
-    () => buildRouteMapData(routeResult),
-    [routeResult],
+    () =>
+      buildRouteMapData(routeResult, {
+        selectedRouteOptionIndex,
+        selectedFromPoint,
+        selectedToPoint,
+      }),
+    [routeResult, selectedRouteOptionIndex, selectedFromPoint, selectedToPoint],
   )
 
   useEffect(() => {
@@ -172,6 +205,20 @@ function MapDisplay({
       populationSurfacePopup.remove()
     }
 
+    const handleMapClick = (event: maplibregl.MapMouseEvent) => {
+      const interactiveFeatures = map.queryRenderedFeatures(event.point, {
+        layers: [STOP_LAYER_ID, ENDPOINT_LAYER_ID],
+      })
+      if (interactiveFeatures.length > 0) {
+        return
+      }
+
+      handleMapCoordinateSelect({
+        lat: event.lngLat.lat,
+        lon: event.lngLat.lng,
+      })
+    }
+
     map.on('load', () => {
       addPopulationHeatmapSourceAndLayer(map)
       addRapidTransitNetworkSourceAndLayers(map)
@@ -199,6 +246,7 @@ function MapDisplay({
     }
 
     map.on('moveend', handleMoveEnd)
+    map.on('click', handleMapClick)
     map.on('mousemove', POPULATION_HEATMAP_LAYER_ID, handlePopulationSurfaceMove)
     map.on('mouseleave', POPULATION_HEATMAP_LAYER_ID, handlePopulationSurfaceLeave)
 
@@ -207,6 +255,7 @@ function MapDisplay({
       cancelRapidTransitNetworkRequest(rapidTransitRequestRef)
       populationSurfacePopup.remove()
       map.off('moveend', handleMoveEnd)
+      map.off('click', handleMapClick)
       map.off('mousemove', POPULATION_HEATMAP_LAYER_ID, handlePopulationSurfaceMove)
       map.off('mouseleave', POPULATION_HEATMAP_LAYER_ID, handlePopulationSurfaceLeave)
       map.remove()
@@ -261,6 +310,19 @@ function MapDisplay({
   return (
     <div className="map-display">
       <div ref={mapContainerRef} className="map-canvas" />
+      <div className="map-selection-banner">
+        <span className="selection-chip selection-chip--start">
+          {selectedFromPoint ? 'Origin set' : '1. Click origin'}
+        </span>
+        <span className="selection-chip selection-chip--end">
+          {selectedFromPoint && selectedToPoint
+            ? 'Destination set'
+            : selectedFromPoint
+              ? '2. Click destination'
+              : '2. Click destination'}
+        </span>
+        <span className="selection-hint">Third click resets to a new origin.</span>
+      </div>
       <div className="map-legend map-legend--routes">
         <span className="legend-line transit" />
         <span>Planned ride</span>
@@ -324,7 +386,7 @@ function updateMapRouteData(
   stopSource.setData(routeMapData.stopCollection as never)
   endpointSource.setData(routeMapData.endpointCollection as never)
 
-  if (routeMapData.bounds) {
+  if (routeMapData.bounds && routeMapData.shouldAutoFit) {
     map.fitBounds(routeMapData.bounds, {
       padding: 52,
       duration: 850,

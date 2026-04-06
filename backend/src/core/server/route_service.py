@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,14 @@ from .network_lines import load_network_lines_geojson
 from .population_grid import load_population_grid_geojson
 from .segment_shapes import attach_path_segment_geometries
 from .serializers import RouteRequest as RoutePayload
+
+
+@dataclass(frozen=True)
+class _RouteOptionLike:
+    best_plan: Any
+    itinerary: Any
+    major_trip_transfers: int
+    transit_legs: int
 
 
 class RouteService:
@@ -75,30 +83,29 @@ class RouteService:
                 request=request,
                 in_memory_graph_cache=self._graph_cache,
             )
-            itinerary = result.itinerary
-            itinerary_path_segments = [
-                asdict(segment) for segment in itinerary.path_segments
+            route_options = self._route_options_from_result(result)
+            serialized_options = [
+                self._serialize_route_option(
+                    session=session,
+                    feed_id=result.feed_id,
+                    option=option,
+                )
+                for option in route_options
             ]
-            attach_path_segment_geometries(
-                session=session,
-                feed_id=result.feed_id,
-                path_segments=itinerary_path_segments,
-            )
-
-            best_plan_data = asdict(result.best_plan)
-            self._normalize_best_plan_edge_fields(best_plan_data)
+            if not serialized_options:
+                raise ValueError("Route planner returned no route options.")
+            best_option_index = int(getattr(result, "best_option_index", 0) or 0)
+            if best_option_index < 0 or best_option_index >= len(serialized_options):
+                best_option_index = 0
+            best_option = serialized_options[best_option_index]
             return {
                 "feed_id": result.feed_id,
                 "cache_logs": result.cache_logs,
                 "context_lines": result.context_lines,
-                "itinerary": {
-                    "summary": itinerary.summary,
-                    "timing": itinerary.timing,
-                    "stops": [asdict(stop) for stop in itinerary.stops],
-                    "path_segments": itinerary_path_segments,
-                    "legs": [asdict(leg) for leg in itinerary.legs],
-                },
-                "best_plan": best_plan_data,
+                "itinerary": best_option["itinerary"],
+                "best_plan": best_option["best_plan"],
+                "options": serialized_options,
+                "best_option_index": best_option_index,
             }
         finally:
             session.close()
@@ -173,6 +180,66 @@ class RouteService:
             to_route_stop_id = edge.pop("to_route_stop_id", None)
             if to_route_stop_id is not None:
                 edge["to_stop_id"] = to_route_stop_id
+
+    @classmethod
+    def _route_options_from_result(cls, result: Any) -> list[_RouteOptionLike]:
+        result_options = getattr(result, "options", None)
+        if result_options:
+            return [
+                _RouteOptionLike(
+                    best_plan=option.best_plan,
+                    itinerary=option.itinerary,
+                    major_trip_transfers=int(option.major_trip_transfers),
+                    transit_legs=int(option.transit_legs),
+                )
+                for option in result_options
+            ]
+
+        ride_legs = [
+            leg
+            for leg in getattr(getattr(result, "itinerary", None), "legs", [])
+            if getattr(leg, "mode", None) == "ride"
+        ]
+        return [
+            _RouteOptionLike(
+                best_plan=result.best_plan,
+                itinerary=result.itinerary,
+                major_trip_transfers=max(len(ride_legs) - 1, 0),
+                transit_legs=len(ride_legs),
+            )
+        ]
+
+    def _serialize_route_option(
+        self,
+        *,
+        session,
+        feed_id: str,
+        option: _RouteOptionLike,
+    ) -> dict[str, Any]:
+        itinerary = option.itinerary
+        itinerary_path_segments = [
+            asdict(segment) for segment in getattr(itinerary, "path_segments", [])
+        ]
+        attach_path_segment_geometries(
+            session=session,
+            feed_id=feed_id,
+            path_segments=itinerary_path_segments,
+        )
+
+        best_plan_data = asdict(option.best_plan)
+        self._normalize_best_plan_edge_fields(best_plan_data)
+        return {
+            "best_plan": best_plan_data,
+            "itinerary": {
+                "summary": itinerary.summary,
+                "timing": itinerary.timing,
+                "stops": [asdict(stop) for stop in getattr(itinerary, "stops", [])],
+                "path_segments": itinerary_path_segments,
+                "legs": [asdict(leg) for leg in getattr(itinerary, "legs", [])],
+            },
+            "major_trip_transfers": option.major_trip_transfers,
+            "transit_legs": option.transit_legs,
+        }
 
     def _request_from_payload(self, payload: RoutePayload) -> RoutePlannerRequest:
         request_data = self._default_request_data()

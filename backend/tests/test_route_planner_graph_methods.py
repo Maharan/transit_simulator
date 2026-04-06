@@ -43,12 +43,24 @@ def test_display_stop_ids_for_path_prefers_graph_node_metadata() -> None:
 
 
 def test_display_stop_ids_for_path_falls_back_to_trip_stop_split() -> None:
-    graph = SimpleNamespace(nodes={})
+    graph = SimpleNamespace(nodes={}, route_stop_ids_for_stop=lambda _stop_id: set())
     mapping = _display_stop_ids_for_path(
         graph=graph,
         stop_ids=["BT::trip-1", "S3"],
     )
     assert mapping == {"BT::trip-1": "BT", "S3": "S3"}
+
+
+def test_display_stop_ids_for_path_preserves_real_gtfs_ids_with_double_colons() -> None:
+    graph = SimpleNamespace()
+    mapping = _display_stop_ids_for_path(
+        graph=graph,
+        stop_ids=["de:02000:60010::600052", "S3"],
+    )
+    assert mapping == {
+        "de:02000:60010::600052": "de:02000:60010::600052",
+        "S3": "S3",
+    }
 
 
 def test_make_query_source_node_id_uses_prefix() -> None:
@@ -83,7 +95,7 @@ def test_strip_query_terminals_from_result_removes_source_and_sink_hops() -> Non
 def test_display_stop_ids_for_path_ignores_query_terminal_nodes() -> None:
     source_id = _make_query_source_node_id("AT")
     sink_id = _make_query_sink_node_id("BT")
-    graph = SimpleNamespace(nodes={})
+    graph = SimpleNamespace(nodes={}, route_stop_ids_for_stop=lambda _stop_id: set())
     mapping = _display_stop_ids_for_path(
         graph=graph,
         stop_ids=[source_id, "BT::trip-1", sink_id, "S3"],

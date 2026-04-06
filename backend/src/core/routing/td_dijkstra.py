@@ -188,7 +188,7 @@ def td_dijkstra(
     goal_id: str,
     depart_time_str: str,
     assume_zero_missing: bool = False,
-    transfer_penalty_sec: int = 300,
+    transfer_penalty_sec: int = 0,
     route_change_penalty_sec: int | None = None,
     time_horizon_sec: int | None = 4 * 3600,
     max_wait_sec: int | None = None,
@@ -218,7 +218,7 @@ def td_dijkstra(
     if depart_time_sec is None:
         raise ValueError("Invalid depart_time_str. Expected HH:MM:SS.")
     if route_change_penalty_sec is None:
-        route_change_penalty_sec = transfer_penalty_sec
+        route_change_penalty_sec = 0
     if state_by not in {"route", "trip"}:
         raise ValueError("state_by must be 'route' or 'trip'.")
     if max_wait_sec is not None and max_wait_sec <= 0:
